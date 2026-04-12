@@ -78,6 +78,9 @@ class TradeExecutor:
         self.base_url = self.TESTNET_URL if self.use_testnet else self.MAINNET_URL
         self._order_history: list[TradeOrder] = []
         self._active_positions: dict[str, TradeOrder] = {}
+        self._http_client: httpx.AsyncClient | None = None
+        self._lot_sizes: dict[str, int] = {}
+        self._lot_sizes_loaded = False
 
         if self.use_testnet:
             logger.info("Binance TESTNET modu aktif")
@@ -87,6 +90,18 @@ class TradeExecutor:
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key and self.api_secret)
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Tekil httpx client döndür (lazy init)"""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=10)
+        return self._http_client
+
+    async def close(self):
+        """HTTP client'ı kapat"""
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
+            self._http_client = None
 
     def _sign(self, params: dict) -> dict:
         """Binance API imzalama"""
@@ -105,6 +120,10 @@ class TradeExecutor:
 
     async def execute_signal(self, signal: TradingSignal) -> Optional[TradeOrder]:
         """Sinyali Binance emrine dönüştür ve gönder"""
+        # İlk çağrıda lot size'ları yükle
+        if not self._lot_sizes_loaded:
+            await self._load_lot_sizes()
+
         if not self.is_configured:
             logger.warning("Binance API anahtarları yapılandırılmamış - simülasyon modu")
             return self._simulate_order(signal)
@@ -202,15 +221,14 @@ class TradeExecutor:
 
         signed = self._sign(params)
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.base_url}/api/v3/order",
-                params=signed,
-                headers=self._headers(),
-                timeout=10,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        client = await self._get_client()
+        resp = await client.post(
+            f"{self.base_url}/api/v3/order",
+            params=signed,
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     async def _place_stop_loss(self, symbol: str, side: str, quantity: float, stop_price: float) -> Optional[dict]:
         """Stop-loss emri gönder"""
@@ -226,15 +244,14 @@ class TradeExecutor:
         signed = self._sign(params)
 
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/v3/order",
-                    params=signed,
-                    headers=self._headers(),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                return resp.json()
+            client = await self._get_client()
+            resp = await client.post(
+                f"{self.base_url}/api/v3/order",
+                params=signed,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.error(f"Stop-loss emri hatası: {e}")
             return None
@@ -253,15 +270,14 @@ class TradeExecutor:
         signed = self._sign(params)
 
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/v3/order",
-                    params=signed,
-                    headers=self._headers(),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                return resp.json()
+            client = await self._get_client()
+            resp = await client.post(
+                f"{self.base_url}/api/v3/order",
+                params=signed,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.error(f"Take-profit emri hatası: {e}")
             return None
@@ -273,27 +289,26 @@ class TradeExecutor:
 
         params = self._sign({})
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{self.base_url}/api/v3/account",
-                    params=params,
-                    headers=self._headers(),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
+            client = await self._get_client()
+            resp = await client.get(
+                f"{self.base_url}/api/v3/account",
+                params=params,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-                # Sadece bakiyesi olan varlıkları göster
-                balances = [
-                    {
-                        'asset': b['asset'],
-                        'free': float(b['free']),
-                        'locked': float(b['locked']),
-                    }
-                    for b in data.get('balances', [])
-                    if float(b['free']) > 0 or float(b['locked']) > 0
-                ]
-                return {'balances': balances}
+            # Sadece bakiyesi olan varlıkları göster
+            balances = [
+                {
+                    'asset': b['asset'],
+                    'free': float(b['free']),
+                    'locked': float(b['locked']),
+                }
+                for b in data.get('balances', [])
+                if float(b['free']) > 0 or float(b['locked']) > 0
+            ]
+            return {'balances': balances}
         except Exception as e:
             logger.error(f"Hesap bakiyesi hatası: {e}")
             return {'error': str(e), 'balances': []}
@@ -320,15 +335,53 @@ class TradeExecutor:
         logger.info(f"Simülasyon emri: {signal.coin} {order.side} qty={order.quantity} price={order.price}")
         return order
 
-    def _round_quantity(self, quantity: float, coin: str) -> float:
-        """Coin'e göre miktar yuvarla (Binance lot size kuralları)"""
-        # Yaygın coin lot size'ları
-        lot_sizes = {
+    async def _load_lot_sizes(self):
+        """Binance exchangeInfo'dan lot size'ları dinamik yükle"""
+        if self._lot_sizes_loaded:
+            return
+
+        # Fallback statik değerler
+        self._lot_sizes = {
             'BTC': 5, 'ETH': 4, 'BNB': 3, 'SOL': 2,
             'XRP': 1, 'ADA': 1, 'DOGE': 0, 'AVAX': 2,
             'DOT': 2, 'MATIC': 1,
         }
-        decimals = lot_sizes.get(coin.upper(), 2)
+
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"{self.base_url}/api/v3/exchangeInfo")
+            if resp.status_code == 200:
+                data = resp.json()
+                for symbol_info in data.get('symbols', []):
+                    symbol = symbol_info.get('symbol', '')
+                    if not symbol.endswith('USDT'):
+                        continue
+                    coin = symbol.replace('USDT', '')
+
+                    for f in symbol_info.get('filters', []):
+                        if f.get('filterType') == 'LOT_SIZE':
+                            step_size = f.get('stepSize', '0.01')
+                            # stepSize'dan decimal sayısını hesapla
+                            if '.' in step_size:
+                                stripped = step_size.rstrip('0').rstrip('.')
+                                if '.' in stripped:
+                                    decimals = len(stripped.split('.')[1])
+                                else:
+                                    decimals = 0
+                            else:
+                                decimals = 0
+                            self._lot_sizes[coin] = decimals
+                            break
+
+                self._lot_sizes_loaded = True
+                logger.info(f"Lot size'lar yüklendi: {len(self._lot_sizes)} sembol")
+        except Exception as e:
+            logger.warning(f"Lot size yükleme hatası (fallback kullanılıyor): {e}")
+            self._lot_sizes_loaded = True  # Fallback ile devam et
+
+    def _round_quantity(self, quantity: float, coin: str) -> float:
+        """Coin'e göre miktar yuvarla (Binance lot size kuralları)"""
+        decimals = self._lot_sizes.get(coin.upper(), 2)
         return round(quantity, decimals)
 
     def get_order_history(self, limit: int = 50) -> list[dict]:
@@ -344,16 +397,15 @@ class TradeExecutor:
 
         params = self._sign({'symbol': symbol})
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.delete(
-                    f"{self.base_url}/api/v3/openOrders",
-                    params=params,
-                    headers=self._headers(),
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                logger.info(f"Tüm emirler iptal edildi: {symbol}")
-                return True
+            client = await self._get_client()
+            resp = await client.delete(
+                f"{self.base_url}/api/v3/openOrders",
+                params=params,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            logger.info(f"Tüm emirler iptal edildi: {symbol}")
+            return True
         except Exception as e:
             logger.error(f"Emir iptal hatası: {e}")
             return False

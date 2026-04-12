@@ -349,7 +349,7 @@ class SignalStrategistAgent(BaseAgent):
                 'side': action.value,
                 'confidence': round(min(source_count / 4, 1.0), 3),
                 'source': 'strategist',
-                'sources': {s: scores.get(s, 0) for s in data.get('sources', set())},
+                'sources': {s: data.get('scores', {}).get(s, 0) for s in data.get('sources', set())},
                 'size_usdt': round(position_size, 2),
                 'signal': signal.to_dict(),
                 'signal_object': signal,

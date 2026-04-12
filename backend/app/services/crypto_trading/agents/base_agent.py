@@ -23,8 +23,8 @@ class BaseAgent(ABC):
             'last_run': None,
             'started_at': None,
         }
-        # Ajanlar arası iletişim kuyruğu
-        self._inbox: asyncio.Queue = asyncio.Queue()
+        # Ajanlar arası iletişim kuyruğu (maxsize ile OOM koruması)
+        self._inbox: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._outbox: dict[str, asyncio.Queue] = {}
 
     @property
@@ -50,11 +50,19 @@ class BaseAgent(ABC):
     async def send(self, target: str, message: dict):
         """Başka bir ajana mesaj gönder"""
         if target in self._outbox:
-            await self._outbox[target].put({
+            queue = self._outbox[target]
+            msg = {
                 'from': self.name,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 **message,
-            })
+            }
+            if queue.full():
+                # Kuyruk doluysa en eski mesajı at (OOM koruması)
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            await queue.put(msg)
 
     async def receive(self, timeout: float = 0.1) -> dict | None:
         """Inbox'tan mesaj al"""

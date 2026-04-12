@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import websockets
 
+from .config import CryptoTradingConfig
 from .price_service import PriceData
 
 logger = logging.getLogger('crypto_trading.websocket')
@@ -20,12 +21,18 @@ class BinanceWebSocket:
     """
     Binance WebSocket stream manager.
     Birden fazla coin'i tek bağlantıda dinler.
+    Testnet ve Mainnet otomatik URL seçimi.
     """
 
-    BASE_URL = 'wss://stream.binance.com:9443/ws'
-    COMBINED_URL = 'wss://stream.binance.com:9443/stream?streams='
+    MAINNET_URL = 'wss://stream.binance.com:9443/ws'
+    MAINNET_COMBINED = 'wss://stream.binance.com:9443/stream?streams='
+    TESTNET_URL = 'wss://testnet.binance.vision/ws'
+    TESTNET_COMBINED = 'wss://testnet.binance.vision/stream?streams='
 
     def __init__(self):
+        use_testnet = CryptoTradingConfig.BINANCE_TESTNET
+        self.BASE_URL = self.TESTNET_URL if use_testnet else self.MAINNET_URL
+        self.COMBINED_URL = self.TESTNET_COMBINED if use_testnet else self.MAINNET_COMBINED
         self._running = False
         self._ws = None
         self._prices: dict[str, PriceData] = {}

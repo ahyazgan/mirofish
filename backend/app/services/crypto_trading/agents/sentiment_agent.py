@@ -36,7 +36,7 @@ class SentimentAgent(BaseAgent):
             all_results = []
             for news in news_objects:
                 for coin in news.coins[:3]:  # Her haberde max 3 coin analiz et
-                    results = self.analyzer.analyze(news, target_coin=coin)
+                    results = await self.analyzer.analyze(news, target_coin=coin)
                     all_results.extend(results)
 
             if all_results:

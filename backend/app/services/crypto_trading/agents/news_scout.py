@@ -29,8 +29,8 @@ class NewsScoutAgent(BaseAgent):
 
         if new_items:
             self.logger.info(f"{len(new_items)} yeni haber bulundu")
-            # Sentiment Agent'a gönder
-            await self.send('sentiment', {
+            # News Dedup'a gönder (tekrar filtresi → sentiment → strategist)
+            await self.send('news_dedup', {
                 'type': 'new_news',
                 'news': [n.to_dict() for n in new_items],
                 'news_objects': new_items,

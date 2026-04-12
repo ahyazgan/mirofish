@@ -5,11 +5,12 @@ MiroFish'in mevcut LLM altyapısını kullanarak haberlerin piyasa etkisini anal
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from .config import CryptoTradingConfig
 from .news_fetcher import NewsItem
@@ -94,48 +95,57 @@ Yanıtını SADECE aşağıdaki JSON formatında ver, başka hiçbir şey ekleme
 }}"""
 
 
+CACHE_TTL_SECONDS = 3600  # 1 saat
+CACHE_MAX_SIZE = 500
+
+
 class SentimentAnalyzer:
-    """LLM tabanlı haber sentiment analiz motoru"""
+    """LLM tabanlı haber sentiment analiz motoru (async)"""
 
     def __init__(self):
-        self._client = OpenAI(
+        self._client = AsyncOpenAI(
             api_key=CryptoTradingConfig.LLM_API_KEY,
             base_url=CryptoTradingConfig.LLM_BASE_URL,
         )
         self._model = CryptoTradingConfig.LLM_MODEL_NAME
-        self._cache: dict[str, SentimentResult] = {}
+        self._cache: dict[str, tuple[float, SentimentResult]] = {}  # key → (timestamp, result)
 
-    def analyze(self, news: NewsItem, target_coin: Optional[str] = None) -> list[SentimentResult]:
+    async def analyze(self, news: NewsItem, target_coin: Optional[str] = None) -> list[SentimentResult]:
         """Tek bir haberi analiz et, her ilgili coin için sonuç döndür"""
         coins = [target_coin] if target_coin else (news.coins or ['GENERAL'])
         results = []
 
+        # Cache temizliği (her çağrıda)
+        self._cleanup_cache()
+
         for coin in coins:
             cache_key = f"{news.id}:{coin}"
-            if cache_key in self._cache:
-                results.append(self._cache[cache_key])
+            cached = self._cache.get(cache_key)
+            if cached:
+                _, result = cached
+                results.append(result)
                 continue
 
             try:
-                result = self._analyze_single(news, coin)
+                result = await self._analyze_single(news, coin)
                 if result:
-                    self._cache[cache_key] = result
+                    self._cache[cache_key] = (time.time(), result)
                     results.append(result)
             except Exception as e:
                 logger.error(f"Sentiment analiz hatası (news={news.id}, coin={coin}): {e}")
 
         return results
 
-    def analyze_batch(self, news_list: list[NewsItem]) -> list[SentimentResult]:
+    async def analyze_batch(self, news_list: list[NewsItem]) -> list[SentimentResult]:
         """Birden fazla haberi toplu analiz et"""
         all_results = []
         for news in news_list:
-            results = self.analyze(news)
+            results = await self.analyze(news)
             all_results.extend(results)
         return all_results
 
-    def _analyze_single(self, news: NewsItem, coin: str) -> Optional[SentimentResult]:
-        """Tek haber + tek coin için LLM sentiment analizi"""
+    async def _analyze_single(self, news: NewsItem, coin: str) -> Optional[SentimentResult]:
+        """Tek haber + tek coin için LLM sentiment analizi (async)"""
         coin_specific = ""
         if coin != 'GENERAL':
             coin_specific = f"Bu haberin özellikle **{coin}** üzerindeki etkisini analiz et."
@@ -150,7 +160,7 @@ class SentimentAnalyzer:
         )
 
         try:
-            response = self._client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": SENTIMENT_SYSTEM_PROMPT},
@@ -186,6 +196,20 @@ class SentimentAnalyzer:
         except Exception as e:
             logger.error(f"LLM API hatası: {e}")
             return None
+
+    def _cleanup_cache(self):
+        """Süresi dolmuş cache entry'lerini temizle"""
+        now = time.time()
+        expired = [k for k, (ts, _) in self._cache.items() if now - ts > CACHE_TTL_SECONDS]
+        for k in expired:
+            del self._cache[k]
+
+        # Max boyut aşıldıysa en eskileri sil
+        if len(self._cache) > CACHE_MAX_SIZE:
+            sorted_items = sorted(self._cache.items(), key=lambda x: x[1][0])
+            to_remove = len(self._cache) - CACHE_MAX_SIZE
+            for k, _ in sorted_items[:to_remove]:
+                del self._cache[k]
 
     def get_aggregate_sentiment(self, coin: str, results: list[SentimentResult]) -> dict:
         """Bir coin için tüm sentiment sonuçlarını birleştir"""

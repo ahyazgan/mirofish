@@ -114,7 +114,7 @@ class NewsDedupAgent(BaseAgent):
                 })
 
                 # Etki Sınıflandırıcıya gönder
-                await self.send('impact_classifier', {
+                await self.send('news_impact', {
                     'type': 'new_news',
                     'news': unique_dicts,
                     'news_objects': unique_news,

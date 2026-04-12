@@ -379,6 +379,10 @@ class AgentOrchestrator:
         # Alert → Telegram (önemli olaylar)
         self.alert.connect('telegram', self.telegram._inbox)
 
+        # Telegram → Kill Switch + Executor (komut dinleme)
+        self.telegram.connect('kill_switch', self.kill_switch._inbox)
+        self.telegram.connect('executor', self.executor._inbox)
+
     async def start(self, duration: int = None):
         """Tüm ajanları paralel başlat"""
         errors, warnings = CryptoTradingConfig.validate()

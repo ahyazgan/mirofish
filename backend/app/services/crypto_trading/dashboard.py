@@ -6,14 +6,19 @@ Flask-SocketIO ile canlı güncelleme.
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
+from functools import wraps
 
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, abort
 from flask_socketio import SocketIO
 
 from .database import get_database
+
+# Dashboard authentication token (env'den oku, yoksa None = auth yok)
+DASHBOARD_TOKEN = os.environ.get('DASHBOARD_TOKEN', '')
 
 logger = logging.getLogger('crypto_trading.dashboard')
 
@@ -394,6 +399,17 @@ def create_dashboard_app(orchestrator=None) -> tuple:
     app.config['SECRET_KEY'] = 'mirofish-trading-dashboard'
     socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+    def _check_auth():
+        """Token auth kontrolü (DASHBOARD_TOKEN ayarlıysa)"""
+        if DASHBOARD_TOKEN:
+            token = request.args.get('token', '') or request.headers.get('X-Dashboard-Token', '')
+            if token != DASHBOARD_TOKEN:
+                abort(403)
+
+    @app.before_request
+    def before_request():
+        _check_auth()
+
     @app.route('/')
     def index():
         return render_template_string(DASHBOARD_HTML)
@@ -430,7 +446,7 @@ class DashboardServer:
         logger.info(f"Dashboard başlatıldı: http://localhost:{self.port}")
 
     def _run(self):
-        self.socketio.run(self.app, host='0.0.0.0', port=self.port,
+        self.socketio.run(self.app, host='127.0.0.1', port=self.port,
                          allow_unsafe_werkzeug=True, log_output=False)
 
     def _update_loop(self):
