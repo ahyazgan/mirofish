@@ -146,11 +146,114 @@ class AlertAgent(BaseAgent):
                 self.logger.info(
                     f"MAKRO | {msg.get('count', 0)} sinyal - {summary}"
                 )
+            # === YENİ AJAN OLAYLARI ===
+            elif event_type == 'news_impact_classified':
+                self.logger.info(
+                    f"HABER ETKI | {msg.get('coin', '?')} "
+                    f"seviye={msg.get('impact_level', 'N/A')} "
+                    f"beklenen=%{msg.get('expected_move', 0)}"
+                )
+            elif event_type == 'news_verified':
+                self.logger.info(
+                    f"HABER DOGRULAMA | {msg.get('coin', '?')} "
+                    f"skor={msg.get('verification_score', 0)} "
+                    f"durum={msg.get('status', 'N/A')}"
+                )
+            elif event_type == 'news_rejected':
+                self.logger.warning(
+                    f"HABER RED | {msg.get('coin', '?')} "
+                    f"skor={msg.get('verification_score', 0)} "
+                    f"sebep={msg.get('reason', '')}"
+                )
+            elif event_type == 'flash_crash_detected':
+                self.logger.warning(
+                    f"FLASH CRASH | {msg.get('coin', '?')} "
+                    f"dusus=%{msg.get('drop_pct', 0):.1f} "
+                    f"seviye={msg.get('severity', 'N/A')}"
+                )
+            elif event_type == 'onchain_update':
+                self.logger.info(
+                    f"ONCHAIN | {msg.get('count', 0)} sinyal"
+                )
+            elif event_type == 'event_calendar_alert':
+                self.logger.info(
+                    f"TAKVIM | {msg.get('event_name', '?')} "
+                    f"kalan={msg.get('hours_until', 0):.0f}h "
+                    f"etki={msg.get('impact', 'N/A')}"
+                )
+            elif event_type == 'regulation_update':
+                self.logger.info(
+                    f"REGULASYON | {msg.get('count', 0)} haber "
+                    f"etki={msg.get('impact', 'N/A')}"
+                )
+            elif event_type == 'listing_detected':
+                self.logger.info(
+                    f"LISTELEME | {msg.get('coin', '?')} "
+                    f"tip={msg.get('listing_type', 'N/A')} "
+                    f"borsa={msg.get('exchange', 'N/A')}"
+                )
+            elif event_type == 'kill_switch_activated':
+                self.logger.warning(
+                    f"KILL SWITCH | AKTIF! "
+                    f"sebep={msg.get('reason', '?')} "
+                    f"seviye={msg.get('severity', 'N/A')}"
+                )
+            elif event_type == 'kill_switch_deactivated':
+                self.logger.info(
+                    f"KILL SWITCH | Deaktif - {msg.get('message', '')}"
+                )
+            elif event_type == 'api_health_critical':
+                self.logger.warning(
+                    f"API SAGLIK | {msg.get('endpoint', '?')} "
+                    f"hatalar={msg.get('failures', 0)} "
+                    f"hata={msg.get('error', '')[:80]}"
+                )
+            elif event_type in ('balance_critical', 'balance_warning'):
+                self.logger.warning(
+                    f"BAKIYE | beklenen=${msg.get('expected', 0)} "
+                    f"gercek=${msg.get('actual', 0)} "
+                    f"fark=%{msg.get('diff_pct', 0)}"
+                )
+            elif event_type in ('drawdown_critical', 'drawdown_warning'):
+                self.logger.warning(
+                    f"DRAWDOWN | seviye={msg.get('level', '?')} "
+                    f"drawdown=%{msg.get('drawdown_pct', 0)}"
+                )
+            elif event_type == 'losing_streak':
+                self.logger.warning(
+                    f"KAYIP SERISI | {msg.get('streak', 0)} ust uste zarar"
+                )
+            elif event_type == 'slippage_warning':
+                self.logger.info(
+                    f"SLIPPAGE | {msg.get('coin', '?')} "
+                    f"tahmini=%{msg.get('estimated_pct', 0)}"
+                )
+            elif event_type == 'funding_cost_warning':
+                self.logger.info(
+                    f"FONLAMA MALIYET | gunluk=${msg.get('daily_cost', 0)} "
+                    f"(%{msg.get('cost_pct', 0)})"
+                )
+            elif event_type == 'partial_close':
+                self.logger.info(
+                    f"KISMI KAPATMA | {msg.get('coin', '?')} "
+                    f"seviye={msg.get('tp_level', '?')} "
+                    f"miktar=%{msg.get('close_pct', 0)}"
+                )
+            elif event_type == 'daily_report':
+                report = msg.get('report', {})
+                self.logger.info(
+                    f"GUNLUK RAPOR | {report.get('date', '?')} "
+                    f"PnL=${report.get('daily_pnl', 0)} "
+                    f"WinRate=%{report.get('win_rate', 0)}"
+                )
 
             # Önemli olayları Telegram'a forward et
             important_types = {
                 'signal_generated', 'trade_executed', 'position_closing',
                 'risk_locked', 'whale_alert', 'portfolio_report', 'risk_reject',
+                'kill_switch_activated', 'flash_crash_detected',
+                'drawdown_critical', 'balance_critical', 'daily_report',
+                'api_health_critical', 'listing_detected',
             }
             if event_type in important_types:
                 await self.send('telegram', msg)

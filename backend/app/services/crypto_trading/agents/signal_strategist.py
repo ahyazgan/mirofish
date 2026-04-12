@@ -33,18 +33,25 @@ class SignalStrategistAgent(BaseAgent):
 
     # Sinyal kaynak ağırlıkları (toplam ~1.0)
     SOURCE_WEIGHTS = {
-        'news_sentiment': 0.20,      # Haber sentiment en önemli
-        'technical_analysis': 0.18,   # Teknik analiz
-        'orderbook': 0.10,           # Emir defteri
-        'funding_rate': 0.08,        # Fonlama oranı
-        'social_media': 0.06,        # Reddit sentiment
-        'whale_activity': 0.07,      # Balina hareketleri
-        'liquidation': 0.06,         # Likidasyon
-        'correlation': 0.08,         # Korelasyon & F&G
-        'defi_monitor': 0.05,        # DeFi TVL & hacim
-        'volatility': 0.05,          # Volatilite & breakout
-        'market_regime': 0.04,       # Piyasa rejimi
+        'news_sentiment': 0.15,      # Haber sentiment en önemli
+        'news_impact': 0.06,         # Haber etki sınıfı
+        'news_verification': 0.04,   # Haber doğrulama skoru
+        'technical_analysis': 0.14,   # Teknik analiz
+        'orderbook': 0.08,           # Emir defteri
+        'funding_rate': 0.06,        # Fonlama oranı
+        'social_media': 0.05,        # Reddit sentiment
+        'whale_activity': 0.06,      # Balina hareketleri
+        'liquidation': 0.05,         # Likidasyon
+        'correlation': 0.06,         # Korelasyon & F&G
+        'defi_monitor': 0.04,        # DeFi TVL & hacim
+        'volatility': 0.04,          # Volatilite & breakout
+        'market_regime': 0.03,       # Piyasa rejimi
         'macro': 0.03,               # Makroekonomik göstergeler
+        'onchain': 0.04,             # On-chain metrikler
+        'regulation': 0.04,          # Regülasyon haberleri
+        'exchange_listing': 0.04,    # Borsa listeleme/çıkarma
+        'event_calendar': 0.02,      # Etkinlik takvimi
+        'funding_cost': 0.01,        # Fonlama maliyeti
     }
 
     def __init__(self, interval: float = 5.0):
@@ -62,6 +69,13 @@ class SignalStrategistAgent(BaseAgent):
         self._volatility_buffer: list[dict] = []
         self._regime_buffer: list[dict] = []
         self._macro_buffer: list[dict] = []
+        self._onchain_buffer: list[dict] = []
+        self._regulation_buffer: list[dict] = []
+        self._listing_buffer: list[dict] = []
+        self._calendar_buffer: list[dict] = []
+        self._news_impact_buffer: list[dict] = []
+        self._news_verify_buffer: list[dict] = []
+        self._funding_cost_buffer: list[dict] = []
         self._signal_counter = 0
         self._signal_history: list[dict] = []
         self._source_calibration: dict[str, float] = {}  # Backtest'ten gelen kalibrasyon
@@ -128,6 +142,27 @@ class SignalStrategistAgent(BaseAgent):
             elif msg_type == 'macro_signals':
                 self._macro_buffer.extend(msg.get('signals', []))
 
+            elif msg_type == 'onchain_signals':
+                self._onchain_buffer.extend(msg.get('signals', []))
+
+            elif msg_type == 'regulation_signals':
+                self._regulation_buffer.extend(msg.get('signals', []))
+
+            elif msg_type == 'listing_signals':
+                self._listing_buffer.extend(msg.get('signals', []))
+
+            elif msg_type == 'calendar_signals':
+                self._calendar_buffer.extend(msg.get('signals', []))
+
+            elif msg_type == 'news_impact_signals':
+                self._news_impact_buffer.extend(msg.get('signals', []))
+
+            elif msg_type == 'news_verification_signals':
+                self._news_verify_buffer.extend(msg.get('signals', []))
+
+            elif msg_type == 'funding_cost_signal':
+                self._funding_cost_buffer.append(msg)
+
             elif msg_type == 'backtest_calibration':
                 # Backtest'ten kalibrasyon verisi
                 source_stats = msg.get('source_stats', {})
@@ -143,7 +178,11 @@ class SignalStrategistAgent(BaseAgent):
             self._funding_buffer or self._orderbook_buffer or
             self._liquidation_buffer or self._correlation_buffer or
             self._defi_buffer or self._volatility_buffer or
-            self._regime_buffer or self._macro_buffer
+            self._regime_buffer or self._macro_buffer or
+            self._onchain_buffer or self._regulation_buffer or
+            self._listing_buffer or self._calendar_buffer or
+            self._news_impact_buffer or self._news_verify_buffer or
+            self._funding_cost_buffer
         )
 
         if not has_data or not self._latest_prices:
@@ -193,6 +232,27 @@ class SignalStrategistAgent(BaseAgent):
         # 12. Macro Skorları (global - tüm coinlere uygulanır)
         self._process_macro_scores(coin_scores)
 
+        # 13. OnChain Skorları
+        self._process_generic_scores(coin_scores, self._onchain_buffer, 'onchain')
+
+        # 14. Regulation Skorları
+        self._process_generic_scores(coin_scores, self._regulation_buffer, 'regulation')
+
+        # 15. Exchange Listing Skorları
+        self._process_generic_scores(coin_scores, self._listing_buffer, 'exchange_listing')
+
+        # 16. Event Calendar Skorları
+        self._process_generic_scores(coin_scores, self._calendar_buffer, 'event_calendar')
+
+        # 17. News Impact Skorları
+        self._process_generic_scores(coin_scores, self._news_impact_buffer, 'news_impact')
+
+        # 18. News Verification Skorları
+        self._process_generic_scores(coin_scores, self._news_verify_buffer, 'news_verification')
+
+        # 19. Funding Cost Skorları
+        self._process_generic_scores(coin_scores, self._funding_cost_buffer, 'funding_cost')
+
         # Buffer'ları temizle
         self._sentiment_buffer.clear()
         self._technical_buffer.clear()
@@ -206,6 +266,13 @@ class SignalStrategistAgent(BaseAgent):
         self._volatility_buffer.clear()
         self._regime_buffer.clear()
         self._macro_buffer.clear()
+        self._onchain_buffer.clear()
+        self._regulation_buffer.clear()
+        self._listing_buffer.clear()
+        self._calendar_buffer.clear()
+        self._news_impact_buffer.clear()
+        self._news_verify_buffer.clear()
+        self._funding_cost_buffer.clear()
 
         # Sinyal üret
         signals_generated = 0
@@ -275,9 +342,15 @@ class SignalStrategistAgent(BaseAgent):
 
             self._signal_history.append(signal.to_dict())
 
-            # Trade Executor'a gönder
-            await self.send('executor', {
-                'type': 'new_signal',
+            # Conflict Resolver'a gönder (çakışma kontrolü sonrası executor'a iletilir)
+            await self.send('conflict_resolver', {
+                'type': 'trade_signal',
+                'coin': coin,
+                'side': action.value,
+                'confidence': round(min(source_count / 4, 1.0), 3),
+                'source': 'strategist',
+                'sources': {s: scores.get(s, 0) for s in data.get('sources', set())},
+                'size_usdt': round(position_size, 2),
                 'signal': signal.to_dict(),
                 'signal_object': signal,
             })
