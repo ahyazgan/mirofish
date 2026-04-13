@@ -3,6 +3,7 @@ Signal Strategist Agent - Sinyal üretim stratejisti
 20 ajandan gelen verileri birleştirip trading sinyalleri üretir.
 """
 
+import time
 from datetime import datetime, timezone
 
 from .base_agent import BaseAgent
@@ -80,6 +81,10 @@ class SignalStrategistAgent(BaseAgent):
         self._signal_history: list[dict] = []
         self._source_calibration: dict[str, float] = {}  # Backtest'ten gelen kalibrasyon
         self._current_regime: str = 'UNKNOWN'  # Market Regime'dan gelen rejim
+        # Rolling coin skorları — döngüler arası birikir, sinyal üretilince temizlenir
+        self._rolling_scores: dict[str, dict] = {}
+        self._rolling_updated: dict[str, float] = {}  # coin → son güncelleme zamanı
+        self._SCORE_TTL = 300  # 5 dakika sonra expire
 
     @property
     def signal_history(self) -> list[dict]:
@@ -190,68 +195,107 @@ class SignalStrategistAgent(BaseAgent):
 
         await self._generate_signals()
 
+    def _merge_into_rolling(self, cycle_scores: dict):
+        """Bu döngünün skorlarını rolling skorlara birleştir"""
+        now = time.time()
+
+        for coin, data in cycle_scores.items():
+            if coin not in self._rolling_scores:
+                self._rolling_scores[coin] = {
+                    'scores': {},
+                    'sources': set(),
+                    'reasons': [],
+                    'news_ids': [],
+                }
+
+            rolling = self._rolling_scores[coin]
+
+            # Kaynak skorlarını güncelle (en güncel skoru al)
+            for source in data.get('sources', set()):
+                score_val = data.get('scores', {}).get(source, 0)
+                rolling['scores'][source] = score_val
+                rolling['sources'].add(source)
+
+            # Reason'ları ekle (tekrarları engelle)
+            for r in data.get('reasons', []):
+                if r not in rolling['reasons']:
+                    rolling['reasons'].append(r)
+
+            # News ID'leri ekle
+            for nid in data.get('news_ids', []):
+                if nid not in rolling['news_ids']:
+                    rolling['news_ids'].append(nid)
+
+            self._rolling_updated[coin] = now
+
+        # Expire: 5 dakikadan eski coinleri temizle
+        expired = [c for c, t in self._rolling_updated.items() if now - t > self._SCORE_TTL]
+        for c in expired:
+            self._rolling_scores.pop(c, None)
+            self._rolling_updated.pop(c, None)
+
     async def _generate_signals(self):
         """Tüm kaynakları birleştirip sinyal üret"""
 
-        # Coin bazlı tüm skorları topla
-        coin_scores: dict[str, dict] = {}
+        # Bu döngüdeki yeni verileri topla
+        cycle_scores: dict[str, dict] = {}
 
         # 1. Haber Sentiment Skorları
-        self._process_sentiment_scores(coin_scores)
+        self._process_sentiment_scores(cycle_scores)
 
         # 2. Teknik Analiz Skorları
-        self._process_technical_scores(coin_scores)
+        self._process_technical_scores(cycle_scores)
 
         # 3. Social Media Skorları
-        self._process_generic_scores(coin_scores, self._social_buffer, 'social_media')
+        self._process_generic_scores(cycle_scores, self._social_buffer, 'social_media')
 
         # 4. Whale Activity Skorları
-        self._process_whale_scores(coin_scores)
+        self._process_whale_scores(cycle_scores)
 
         # 5. Funding Rate Skorları
-        self._process_generic_scores(coin_scores, self._funding_buffer, 'funding_rate')
+        self._process_generic_scores(cycle_scores, self._funding_buffer, 'funding_rate')
 
         # 6. Order Book Skorları
-        self._process_generic_scores(coin_scores, self._orderbook_buffer, 'orderbook')
+        self._process_generic_scores(cycle_scores, self._orderbook_buffer, 'orderbook')
 
         # 7. Liquidation Skorları
-        self._process_generic_scores(coin_scores, self._liquidation_buffer, 'liquidation')
+        self._process_generic_scores(cycle_scores, self._liquidation_buffer, 'liquidation')
 
         # 8. Correlation Skorları (global - tüm coinlere uygulanır)
-        self._process_correlation_scores(coin_scores)
+        self._process_correlation_scores(cycle_scores)
 
         # 9. DeFi Monitor Skorları
-        self._process_generic_scores(coin_scores, self._defi_buffer, 'defi_monitor')
+        self._process_generic_scores(cycle_scores, self._defi_buffer, 'defi_monitor')
 
         # 10. Volatility Skorları
-        self._process_generic_scores(coin_scores, self._volatility_buffer, 'volatility')
+        self._process_generic_scores(cycle_scores, self._volatility_buffer, 'volatility')
 
         # 11. Market Regime Skorları
-        self._process_generic_scores(coin_scores, self._regime_buffer, 'market_regime')
+        self._process_generic_scores(cycle_scores, self._regime_buffer, 'market_regime')
 
         # 12. Macro Skorları (global - tüm coinlere uygulanır)
-        self._process_macro_scores(coin_scores)
+        self._process_macro_scores(cycle_scores)
 
         # 13. OnChain Skorları
-        self._process_generic_scores(coin_scores, self._onchain_buffer, 'onchain')
+        self._process_generic_scores(cycle_scores, self._onchain_buffer, 'onchain')
 
         # 14. Regulation Skorları
-        self._process_generic_scores(coin_scores, self._regulation_buffer, 'regulation')
+        self._process_generic_scores(cycle_scores, self._regulation_buffer, 'regulation')
 
         # 15. Exchange Listing Skorları
-        self._process_generic_scores(coin_scores, self._listing_buffer, 'exchange_listing')
+        self._process_generic_scores(cycle_scores, self._listing_buffer, 'exchange_listing')
 
         # 16. Event Calendar Skorları
-        self._process_generic_scores(coin_scores, self._calendar_buffer, 'event_calendar')
+        self._process_generic_scores(cycle_scores, self._calendar_buffer, 'event_calendar')
 
         # 17. News Impact Skorları
-        self._process_generic_scores(coin_scores, self._news_impact_buffer, 'news_impact')
+        self._process_generic_scores(cycle_scores, self._news_impact_buffer, 'news_impact')
 
         # 18. News Verification Skorları
-        self._process_generic_scores(coin_scores, self._news_verify_buffer, 'news_verification')
+        self._process_generic_scores(cycle_scores, self._news_verify_buffer, 'news_verification')
 
         # 19. Funding Cost Skorları
-        self._process_generic_scores(coin_scores, self._funding_cost_buffer, 'funding_cost')
+        self._process_generic_scores(cycle_scores, self._funding_cost_buffer, 'funding_cost')
 
         # Buffer'ları temizle
         self._sentiment_buffer.clear()
@@ -274,6 +318,19 @@ class SignalStrategistAgent(BaseAgent):
         self._news_verify_buffer.clear()
         self._funding_cost_buffer.clear()
 
+        # Bu döngünün skorlarını rolling'e birleştir
+        self._merge_into_rolling(cycle_scores)
+
+        # Rolling skorları kullanarak sinyal değerlendir
+        coin_scores = {}
+        for coin, rolling in self._rolling_scores.items():
+            coin_scores[coin] = {
+                'scores': dict(rolling['scores']),
+                'sources': set(rolling['sources']),
+                'reasons': list(rolling['reasons']),
+                'news_ids': list(rolling['news_ids']),
+            }
+
         # Sinyal üret
         signals_generated = 0
 
@@ -294,9 +351,9 @@ class SignalStrategistAgent(BaseAgent):
 
             # Güç - kaynak çeşitliliği de etkili
             source_count = len(data.get('sources', set()))
-            if abs(final_score) > 0.7 and source_count >= 3:
+            if abs(final_score) > 0.5 and source_count >= 3:
                 strength = SignalStrength.STRONG
-            elif abs(final_score) > 0.4 and source_count >= 2:
+            elif abs(final_score) > 0.2 and source_count >= 2:
                 strength = SignalStrength.MODERATE
             else:
                 strength = SignalStrength.WEAK
@@ -373,6 +430,10 @@ class SignalStrategistAgent(BaseAgent):
                 'sources': sources_str,
                 'source_count': source_count,
             })
+
+            # Sinyal üretilen coini rolling'den temizle (tekrar üretmesin)
+            self._rolling_scores.pop(coin, None)
+            self._rolling_updated.pop(coin, None)
 
             signals_generated += 1
             self.logger.info(
