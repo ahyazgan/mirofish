@@ -42,7 +42,7 @@ class DrawdownAgent(BaseAgent):
         self._recovery_step: int = 0
         self._daily_pnl: float = 0
         self._drawdown_history: list[dict] = []
-        self._stats = {
+        self._dd_stats = {
             'max_daily_dd': 0.0,
             'max_total_dd': 0.0,
             'daily_limit_hits': 0,
@@ -55,7 +55,7 @@ class DrawdownAgent(BaseAgent):
         daily_dd = self._calc_daily_drawdown()
         total_dd = self._calc_total_drawdown()
         return {
-            **self._stats,
+            **self._dd_stats,
             'current_daily_dd': round(daily_dd, 2),
             'current_total_dd': round(total_dd, 2),
             'peak_balance': round(self._peak_balance, 2),
@@ -127,14 +127,14 @@ class DrawdownAgent(BaseAgent):
         total_dd = self._calc_total_drawdown()
 
         # İstatistik güncelle
-        if daily_dd > self._stats['max_daily_dd']:
-            self._stats['max_daily_dd'] = round(daily_dd, 2)
-        if total_dd > self._stats['max_total_dd']:
-            self._stats['max_total_dd'] = round(total_dd, 2)
+        if daily_dd > self._dd_stats['max_daily_dd']:
+            self._dd_stats['max_daily_dd'] = round(daily_dd, 2)
+        if total_dd > self._dd_stats['max_total_dd']:
+            self._dd_stats['max_total_dd'] = round(total_dd, 2)
 
         # Toplam drawdown → Kill Switch
         if total_dd >= self.TOTAL_MAX_PCT:
-            self._stats['total_limit_hits'] += 1
+            self._dd_stats['total_limit_hits'] += 1
             self.logger.warning(
                 f"DRAWDOWN KRITIK | Toplam={total_dd:.1f}% (limit={self.TOTAL_MAX_PCT}%)"
             )
@@ -180,7 +180,7 @@ class DrawdownAgent(BaseAgent):
 
         # Günlük drawdown → Trade durdur
         if daily_dd >= self.DAILY_MAX_PCT:
-            self._stats['daily_limit_hits'] += 1
+            self._dd_stats['daily_limit_hits'] += 1
             self.logger.warning(
                 f"GUNLUK DRAWDOWN LIMIT | {daily_dd:.1f}% (limit={self.DAILY_MAX_PCT}%)"
             )
@@ -227,7 +227,7 @@ class DrawdownAgent(BaseAgent):
     async def _check_losing_streak(self):
         """Üst üste zarar kontrolü"""
         if self._losing_streak >= self.MAX_LOSING_STREAK:
-            self._stats['streak_reductions'] += 1
+            self._dd_stats['streak_reductions'] += 1
 
             if not self._recovery_mode:
                 self._recovery_mode = True

@@ -17,6 +17,7 @@ class CryptoTradingConfig:
     BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '')
     BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
     BINANCE_TESTNET = os.environ.get('BINANCE_TESTNET', 'true').lower() == 'true'
+    SIMULATION_MODE = os.environ.get('SIMULATION_MODE', 'true').lower() == 'true'
 
     # === LLM (MiroFish'in mevcut LLM config'ini kullanır) ===
     LLM_API_KEY = os.environ.get('LLM_API_KEY', '')
@@ -31,7 +32,7 @@ class CryptoTradingConfig:
     ).split(',')
 
     # Minimum sentiment skoru (trading sinyali üretmek için)
-    MIN_SENTIMENT_SCORE = float(os.environ.get('MIN_SENTIMENT_SCORE', '0.6'))
+    MIN_SENTIMENT_SCORE = float(os.environ.get('MIN_SENTIMENT_SCORE', '0.3'))
 
     # Maksimum pozisyon büyüklüğü (USDT)
     MAX_POSITION_SIZE = float(os.environ.get('MAX_POSITION_SIZE', '100'))

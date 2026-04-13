@@ -72,19 +72,31 @@ class BinanceWebSocket:
 
     async def _connect_and_listen(self, symbols: list[str]):
         """WebSocket'e bağlan ve dinle"""
-        # Combined stream URL oluştur
-        streams = []
-        for s in symbols:
-            s = s.lower()
-            streams.append(f"{s}usdt@miniTicker")
+        streams = [f"{s.lower()}usdt@miniTicker" for s in symbols]
+        use_testnet = self.BASE_URL == self.TESTNET_URL
 
-        url = self.COMBINED_URL + '/'.join(streams)
-        logger.info(f"WebSocket bağlanıyor: {len(symbols)} sembol")
+        if use_testnet:
+            # Testnet combined stream desteklemiyor, tek bağlantı + SUBSCRIBE kullan
+            url = self.BASE_URL
+        else:
+            url = self.COMBINED_URL + '/'.join(streams)
+
+        logger.info(f"WebSocket bağlanıyor: {len(symbols)} sembol (testnet={use_testnet})")
 
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self._ws = ws
             self._reconnect_delay = 1
             logger.info("WebSocket bağlandı!")
+
+            if use_testnet:
+                # Testnet: SUBSCRIBE mesajı ile abone ol
+                subscribe_msg = {
+                    "method": "SUBSCRIBE",
+                    "params": streams,
+                    "id": 1,
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                logger.info(f"WebSocket SUBSCRIBE gönderildi: {len(streams)} stream")
 
             async for message in ws:
                 if not self._running:
@@ -92,8 +104,11 @@ class BinanceWebSocket:
 
                 try:
                     data = json.loads(message)
+                    # Combined stream: data is nested under 'data' key
+                    # Single stream / SUBSCRIBE: data is directly the event
                     stream_data = data.get('data', data)
-                    await self._process_ticker(stream_data)
+                    if stream_data.get('e'):
+                        await self._process_ticker(stream_data)
                 except json.JSONDecodeError:
                     pass
                 except Exception:

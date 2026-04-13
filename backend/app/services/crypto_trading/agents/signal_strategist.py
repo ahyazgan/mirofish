@@ -294,9 +294,9 @@ class SignalStrategistAgent(BaseAgent):
 
             # Güç - kaynak çeşitliliği de etkili
             source_count = len(data.get('sources', set()))
-            if abs(final_score) > 0.7 and source_count >= 3:
+            if abs(final_score) > 0.6 and source_count >= 3:
                 strength = SignalStrength.STRONG
-            elif abs(final_score) > 0.4 and source_count >= 2:
+            elif abs(final_score) > 0.3 and source_count >= 1:
                 strength = SignalStrength.MODERATE
             else:
                 strength = SignalStrength.WEAK

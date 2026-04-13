@@ -35,7 +35,7 @@ class FundingCostAgent(BaseAgent):
         self._total_daily_cost: float = 0
         self._portfolio_value: float = 0
         self._cost_history: list[dict] = []
-        self._stats = {
+        self._cost_stats = {
             'warnings': 0,
             'close_suggestions': 0,
             'opportunities_found': 0,
@@ -44,7 +44,7 @@ class FundingCostAgent(BaseAgent):
     @property
     def funding_cost_stats(self) -> dict:
         return {
-            **self._stats,
+            **self._cost_stats,
             'total_daily_cost': round(self._total_daily_cost, 4),
             'active_positions': len(self._open_positions),
             'cost_pct': round(
@@ -123,7 +123,7 @@ class FundingCostAgent(BaseAgent):
 
         # Yüksek maliyet kontrolü
         if cost_pct >= self.HIGH_DAILY_COST_PCT:
-            self._stats['close_suggestions'] += 1
+            self._cost_stats['close_suggestions'] += 1
 
             # En maliyetli pozisyonu bul
             worst_coin = max(self._daily_costs, key=lambda c: abs(self._daily_costs[c]))
@@ -158,7 +158,7 @@ class FundingCostAgent(BaseAgent):
             })
 
         elif cost_pct >= self.WARN_DAILY_COST_PCT:
-            self._stats['warnings'] += 1
+            self._cost_stats['warnings'] += 1
             self.logger.info(
                 f"FONLAMA UYARI | Günlük maliyet=${self._total_daily_cost:.4f} "
                 f"(%{cost_pct:.3f})"
@@ -167,7 +167,7 @@ class FundingCostAgent(BaseAgent):
         # Fırsat tespiti: negatif fonlama oranı olan coinler
         for coin, rate in self._funding_rates.items():
             if rate <= self.OPPORTUNITY_RATE and coin not in self._open_positions:
-                self._stats['opportunities_found'] += 1
+                self._cost_stats['opportunities_found'] += 1
 
                 await self.send('strategist', {
                     'type': 'funding_cost_signal',

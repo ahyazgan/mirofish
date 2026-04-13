@@ -124,8 +124,8 @@ class TradeExecutor:
         if not self._lot_sizes_loaded:
             await self._load_lot_sizes()
 
-        if not self.is_configured:
-            logger.warning("Binance API anahtarları yapılandırılmamış - simülasyon modu")
+        if not self.is_configured or CryptoTradingConfig.SIMULATION_MODE:
+            logger.info("Simülasyon modu - demo trade")
             return self._simulate_order(signal)
 
         symbol = f"{signal.coin}USDT"

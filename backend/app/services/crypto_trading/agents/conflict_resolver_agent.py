@@ -47,7 +47,7 @@ class ConflictResolverAgent(BaseAgent):
         self._active_decisions: dict[str, dict] = {}  # coin → decision
         self._conflict_history: list[dict] = []
         self._kill_switch_active = False
-        self._stats = {
+        self._resolver_stats = {
             'total_conflicts': 0,
             'resolved': 0,
             'blocked_by_kill': 0,
@@ -57,7 +57,7 @@ class ConflictResolverAgent(BaseAgent):
     @property
     def resolver_stats(self) -> dict:
         return {
-            **self._stats,
+            **self._resolver_stats,
             'pending_signals': len(self._pending_signals),
             'active_decisions': len(self._active_decisions),
             'kill_switch_active': self._kill_switch_active,
@@ -81,7 +81,7 @@ class ConflictResolverAgent(BaseAgent):
 
             elif msg_type == 'trade_signal':
                 if self._kill_switch_active:
-                    self._stats['blocked_by_kill'] += 1
+                    self._resolver_stats['blocked_by_kill'] += 1
                     continue
 
                 self._pending_signals.append({
@@ -91,6 +91,8 @@ class ConflictResolverAgent(BaseAgent):
                     'source': msg.get('source', 'unknown'),
                     'sources': msg.get('sources', {}),
                     'size_usdt': msg.get('size_usdt', 0),
+                    'signal': msg.get('signal', {}),
+                    'signal_object': msg.get('signal_object'),
                     'time': datetime.now(timezone.utc).isoformat(),
                 })
 
@@ -99,7 +101,7 @@ class ConflictResolverAgent(BaseAgent):
                 reason = msg.get('reason', '')
                 if coin in self._active_decisions:
                     del self._active_decisions[coin]
-                self._stats['blocked_by_risk'] += 1
+                self._resolver_stats['blocked_by_risk'] += 1
                 self.logger.info(f"RISK RED | {coin} sebep={reason}")
 
             elif msg_type == 'position_closed':
@@ -136,7 +138,7 @@ class ConflictResolverAgent(BaseAgent):
                 continue
 
             # Çoklu sinyal → çakışma var
-            self._stats['total_conflicts'] += 1
+            self._resolver_stats['total_conflicts'] += 1
 
             # Yön çakışması kontrol
             buy_signals = [s for s in signals if s['side'] == 'BUY']
@@ -187,7 +189,7 @@ class ConflictResolverAgent(BaseAgent):
                 best = max(signals, key=lambda s: s.get('confidence', 0))
                 resolved.append(best)
 
-            self._stats['resolved'] += 1
+            self._resolver_stats['resolved'] += 1
 
         # Eşzamanlı sinyal limiti
         if len(resolved) > self.MAX_CONCURRENT_SIGNALS:
@@ -215,6 +217,8 @@ class ConflictResolverAgent(BaseAgent):
                 'size_usdt': signal.get('size_usdt', 0),
                 'source': 'conflict_resolver',
                 'original_sources': signal.get('sources', {}),
+                'signal': signal.get('signal', {}),
+                'signal_object': signal.get('signal_object'),
             })
 
         if len(self._conflict_history) > 200:

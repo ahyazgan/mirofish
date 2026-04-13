@@ -23,12 +23,12 @@ class PositionSpeedAgent(BaseAgent):
     def __init__(self, interval: float = 2.0):
         super().__init__('Pozisyon Hiz Yoneticisi', interval=interval)
         self._active_entries: dict[str, dict] = {}  # coin → entry plan
-        self._stats = {'instant': 0, 'fast': 0, 'gradual': 0, 'careful': 0}
+        self._speed_stats = {'instant': 0, 'fast': 0, 'gradual': 0, 'careful': 0}
 
     @property
     def speed_stats(self) -> dict:
         return {
-            **self._stats,
+            **self._speed_stats,
             'active_entries': len(self._active_entries),
         }
 
@@ -51,7 +51,7 @@ class PositionSpeedAgent(BaseAgent):
                     'entry_strategy': strategy,
                 })
 
-                self._stats[strategy['type']] += 1
+                self._speed_stats[strategy['type']] += 1
 
                 self.logger.info(
                     f"GIRIS STRATEJISI | {signal.get('coin', '?')} "

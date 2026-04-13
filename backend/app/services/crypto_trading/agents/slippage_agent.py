@@ -30,7 +30,7 @@ class SlippageAgent(BaseAgent):
         super().__init__('Slippage Hesaplayici', interval=interval)
         self._orderbook_data: dict[str, dict] = {}  # coin → bid/ask data
         self._slippage_history: list[dict] = []
-        self._stats = {'estimated': 0, 'warned': 0, 'blocked': 0}
+        self._slip_stats = {'estimated': 0, 'warned': 0, 'blocked': 0}
 
     @property
     def slippage_stats(self) -> dict:
@@ -38,7 +38,7 @@ class SlippageAgent(BaseAgent):
         if self._slippage_history:
             avg_slippage = sum(s['slippage_pct'] for s in self._slippage_history[-50:]) / min(len(self._slippage_history), 50)
         return {
-            **self._stats,
+            **self._slip_stats,
             'avg_slippage_pct': round(avg_slippage, 4),
             'history_count': len(self._slippage_history),
         }
@@ -66,7 +66,7 @@ class SlippageAgent(BaseAgent):
                 side = msg.get('side', 'BUY')
 
                 estimate = self._estimate_slippage(coin, order_size_usdt, side)
-                self._stats['estimated'] += 1
+                self._slip_stats['estimated'] += 1
 
                 # Sonucu gönder
                 await self.send('executor', {
@@ -79,13 +79,13 @@ class SlippageAgent(BaseAgent):
                 })
 
                 if not estimate['should_proceed']:
-                    self._stats['blocked'] += 1
+                    self._slip_stats['blocked'] += 1
                     self.logger.warning(
                         f"SLIPPAGE ENGEL | {coin} tahmini={estimate['slippage_pct']:.2f}% "
                         f"eşik={self.BLOCK_SLIPPAGE_PCT}%"
                     )
                 elif estimate['slippage_pct'] > self.WARN_SLIPPAGE_PCT:
-                    self._stats['warned'] += 1
+                    self._slip_stats['warned'] += 1
                     self.logger.info(
                         f"SLIPPAGE UYARI | {coin} tahmini={estimate['slippage_pct']:.2f}% "
                         f"→ {estimate['recommendation']}"
