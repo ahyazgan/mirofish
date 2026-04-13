@@ -95,7 +95,9 @@ class PortfolioTrackerAgent(BaseAgent):
                 }
 
             elif msg.get('type') == 'price_update':
-                self._latest_prices = msg.get('price_objects', {})
+                new_prices = msg.get('price_objects', {})
+                if new_prices:
+                    self._latest_prices.update(new_prices)
 
             elif msg.get('type') == 'position_closed':
                 coin = msg.get('coin', '')

@@ -42,7 +42,7 @@ logging.getLogger('websockets').setLevel(logging.WARNING)
 logging.getLogger('engineio').setLevel(logging.WARNING)
 logging.getLogger('socketio').setLevel(logging.WARNING)
 
-DURATION_SECONDS = 900  # 15 dakika
+DURATION_SECONDS = 3600  # 1 saat
 
 
 async def main():

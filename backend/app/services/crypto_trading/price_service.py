@@ -106,60 +106,41 @@ class PriceService:
         return prices.get(symbol.upper())
 
     async def _fetch_binance(self, symbols: list[str]) -> dict[str, PriceData]:
-        """Binance API'den fiyat verisi çek"""
+        """Binance API'den fiyat verisi çek - tek istekle tüm coinler"""
         prices = {}
+        target_set = {s.upper() for s in symbols}
+
         async with httpx.AsyncClient() as client:
-            # 24hr ticker ile hem fiyat hem değişim alabiliyoruz
-            pairs = [f"{s.upper()}USDT" for s in symbols]
+            try:
+                # Tek istekle TÜM 24hr ticker verilerini al
+                resp = await client.get(self.BINANCE_TICKER_URL, timeout=15)
+                resp.raise_for_status()
+                all_tickers = resp.json()
 
-            for pair in pairs:
-                try:
-                    resp = await client.get(
-                        self.BINANCE_TICKER_URL,
-                        params={'symbol': pair},
-                        timeout=10,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                for data in all_tickers:
+                    pair = data.get('symbol', '')
+                    if not pair.endswith('USDT'):
+                        continue
+                    symbol = pair[:-4]  # BTCUSDT → BTC
+                    if symbol not in target_set:
+                        continue
 
-                    symbol = pair.replace('USDT', '')
                     price = float(data['lastPrice'])
-                    open_price = float(data['openPrice'])
-
-                    # 1h change hesapla (Binance 24hr veriyor, yaklaşık hesap)
                     change_24h = float(data['priceChangePercent'])
 
                     prices[symbol] = PriceData(
                         symbol=symbol,
                         price=price,
-                        change_1h=0,  # Binance ticker'da 1h yok, klines'dan alınabilir
+                        change_1h=0,
                         change_24h=change_24h,
                         volume_24h=float(data['quoteVolume']),
                         high_24h=float(data['highPrice']),
                         low_24h=float(data['lowPrice']),
-                        market_cap=0,  # Binance market cap vermiyor
+                        market_cap=0,
                         updated_at=datetime.now(timezone.utc),
                     )
-                except Exception as e:
-                    logger.warning(f"Binance {pair} hatası: {e}")
-
-            # 1h klines ile 1 saatlik değişimi hesapla
-            for symbol in prices:
-                try:
-                    resp = await client.get(
-                        'https://api.binance.com/api/v3/klines',
-                        params={'symbol': f'{symbol}USDT', 'interval': '1h', 'limit': 2},
-                        timeout=10,
-                    )
-                    resp.raise_for_status()
-                    klines = resp.json()
-                    if len(klines) >= 2:
-                        prev_close = float(klines[0][4])
-                        curr_price = prices[symbol].price
-                        if prev_close > 0:
-                            prices[symbol].change_1h = round(((curr_price - prev_close) / prev_close) * 100, 2)
-                except Exception:
-                    pass
+            except Exception as e:
+                logger.warning(f"Binance toplu ticker hatası: {e}")
 
         logger.info(f"Binance: {len(prices)} coin fiyatı alındı")
         return prices
