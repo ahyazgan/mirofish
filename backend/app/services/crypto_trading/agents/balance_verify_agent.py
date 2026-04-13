@@ -6,6 +6,7 @@ Yetkisiz işlem, API hatası veya bug tespiti.
 from datetime import datetime, timezone
 
 from .base_agent import BaseAgent
+from ..config import CryptoTradingConfig
 
 
 class BalanceVerifyAgent(BaseAgent):
@@ -64,6 +65,10 @@ class BalanceVerifyAgent(BaseAgent):
     async def _verify_balance(self):
         """Bakiye doğrulama"""
         self._last_check = datetime.now(timezone.utc)
+
+        # Simülasyon modunda bakiye doğrulama atla
+        if CryptoTradingConfig.SIMULATION_MODE:
+            return
 
         # Henüz veri yoksa
         if self._expected_balance <= 0 and self._actual_balance <= 0:

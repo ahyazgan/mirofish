@@ -498,6 +498,18 @@ class AgentOrchestrator:
                     'risk_stats': self.risk_manager.risk_stats,
                 })
 
+                # Sinyalleri kaydet
+                for sig in self.strategist.signal_history:
+                    if not sig.get('_db_saved'):
+                        self.db.save_signal(sig)
+                        sig['_db_saved'] = True
+
+                # Trade'leri kaydet
+                for order in self.executor.executor.get_order_history():
+                    if not order.get('_db_saved'):
+                        self.db.save_trade(order)
+                        order['_db_saved'] = True
+
             except Exception as e:
                 logger.error(f"DB sync hatası: {e}")
 
