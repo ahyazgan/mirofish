@@ -32,7 +32,7 @@ class CryptoTradingConfig:
     ).split(',')
 
     # Minimum sentiment skoru (trading sinyali üretmek için)
-    MIN_SENTIMENT_SCORE = float(os.environ.get('MIN_SENTIMENT_SCORE', '0.3'))
+    MIN_SENTIMENT_SCORE = float(os.environ.get('MIN_SENTIMENT_SCORE', '0.5'))
 
     # Maksimum pozisyon büyüklüğü (USDT)
     MAX_POSITION_SIZE = float(os.environ.get('MAX_POSITION_SIZE', '100'))
