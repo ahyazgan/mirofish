@@ -172,13 +172,25 @@ async def main():
     portfolio = status.get('portfolio', {})
     print(f"\n  Portfoy:")
     print(f"    Toplam trade: {portfolio.get('total_trades', 0)}")
+    print(f"    Acik pozisyon: {portfolio.get('open_positions', 0)}")
+    print(f"    Kapanan trade: {portfolio.get('closed_trades', 0)}")
     print(f"    Toplam yatirim: ${portfolio.get('total_invested', 0)}")
+    print(f"    Gerceklesen PnL: ${portfolio.get('realized_pnl', 0)}")
+    print(f"    Acik PnL: ${portfolio.get('unrealized_pnl', 0)}")
+    print(f"    TOPLAM PnL: ${portfolio.get('total_pnl', 0)}")
     print(f"    Win rate: %{portfolio.get('win_rate', 0)}")
 
-    # Pozisyonlar
+    # Açık pozisyon detayları
+    pos_details = portfolio.get('positions', {})
+    if pos_details:
+        print(f"\n  Acik Pozisyon Detaylari:")
+        for coin, p in pos_details.items():
+            emoji = "+" if p.get('pnl', 0) >= 0 else ""
+            print(f"    {coin} {p['side']} | giris=${p['entry_price']} simdi=${p.get('current_price', 0):.4f} | PnL={emoji}${p.get('pnl', 0):.2f} ({emoji}{p.get('pnl_pct', 0):.1f}%)")
+
+    # Risk
     positions = status.get('positions', {})
-    print(f"\n  Acik Pozisyon: {positions.get('open_positions', 0)}")
-    print(f"  Toplam PnL: ${positions.get('total_pnl', 0)}")
+    print(f"\n  Risk:")
     print(f"  Max Drawdown: ${positions.get('max_drawdown', 0)}")
     print(f"  Kelly Fraction: {positions.get('kelly_fraction', 0)}")
     print(f"  Gunluk Kayip: ${positions.get('daily_loss', 0)} / $200")
