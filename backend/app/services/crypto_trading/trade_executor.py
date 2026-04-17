@@ -483,7 +483,10 @@ class TradeExecutor:
         decimals = self._lot_sizes.get(coin.upper(), 2)
         return round(quantity, decimals)
 
-    def get_order_history(self, limit: int = 50) -> list[dict]:
+    def get_order_history(self, limit: int | None = 50) -> list[dict]:
+        """Son `limit` emri dict olarak döndür. limit=None → tüm geçmiş."""
+        if limit is None:
+            return [o.to_dict() for o in self._order_history]
         return [o.to_dict() for o in self._order_history[-limit:]]
 
     def get_active_positions(self) -> dict[str, dict]:

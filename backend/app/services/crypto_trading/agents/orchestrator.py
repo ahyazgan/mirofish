@@ -178,10 +178,22 @@ class AgentOrchestrator:
 
         self._running = False
         self._started_at = None
+        # Daha önce DB'ye yazılmış id'leri hatırla (tekrar INSERT engellemek için).
+        # Uzun süreli çalışmada set büyümesin diye MAX_SAVED_IDS ile budanır.
         self._saved_signal_ids: set[str] = set()
         self._saved_order_keys: set[str] = set()
+        self._order_key_to_trade_id: dict[str, int] = {}
+        # Ajan cycle snapshot'ı (watchdog için)
+        self._prev_cycle_counts: dict[str, int] = {}
+        self._stale_agent_reports: dict[str, int] = {}
 
         self._setup_channels()
+
+    # DB'ye yazılmış id set'lerinin büyümesi için tavan — aşılırsa eski id'ler
+    # unutulur. DB'de UNIQUE kısıt olduğu için yeniden insert denemesi zararsız.
+    MAX_SAVED_IDS = 10000
+    # Bir ajan kaç döngü ilerlememişse "zombi" sayılacak (interval katları)
+    ZOMBIE_CYCLE_MULTIPLIER = 5
 
     def _setup_channels(self):
         """Ajanlar arası mesaj kuyruklarını bağla"""
@@ -191,205 +203,205 @@ class AgentOrchestrator:
         # ══════════════════════════════════════════════════════════
 
         # News Scout → News Dedup (önce tekrar filtresi)
-        self.news_scout.connect('news_dedup', self.news_dedup._inbox)
-        self.news_scout.connect('alert', self.alert._inbox)
+        self.news_scout.connect('news_dedup', self.news_dedup)
+        self.news_scout.connect('alert', self.alert)
 
         # Telegram Listener → News Dedup (push modda breaking news)
-        self.telegram_listener.connect('news_dedup', self.news_dedup._inbox)
-        self.telegram_listener.connect('alert', self.alert._inbox)
+        self.telegram_listener.connect('news_dedup', self.news_dedup)
+        self.telegram_listener.connect('alert', self.alert)
 
         # News Dedup → Sentiment + News Impact + News Verify
-        self.news_dedup.connect('sentiment', self.sentiment._inbox)
-        self.news_dedup.connect('news_impact', self.news_impact._inbox)
-        self.news_dedup.connect('news_verify', self.news_verify._inbox)
+        self.news_dedup.connect('sentiment', self.sentiment)
+        self.news_dedup.connect('news_impact', self.news_impact)
+        self.news_dedup.connect('news_verify', self.news_verify)
 
         # News Impact → Strategist + Alert
-        self.news_impact.connect('strategist', self.strategist._inbox)
-        self.news_impact.connect('alert', self.alert._inbox)
+        self.news_impact.connect('strategist', self.strategist)
+        self.news_impact.connect('alert', self.alert)
 
         # News Verify → Strategist + Alert
-        self.news_verify.connect('strategist', self.strategist._inbox)
-        self.news_verify.connect('alert', self.alert._inbox)
+        self.news_verify.connect('strategist', self.strategist)
+        self.news_verify.connect('alert', self.alert)
 
         # Social Media → Strategist + Alert
-        self.social_media.connect('strategist', self.strategist._inbox)
-        self.social_media.connect('alert', self.alert._inbox)
+        self.social_media.connect('strategist', self.strategist)
+        self.social_media.connect('alert', self.alert)
 
         # Whale Tracker → Strategist + Alert
-        self.whale_tracker.connect('strategist', self.strategist._inbox)
-        self.whale_tracker.connect('alert', self.alert._inbox)
+        self.whale_tracker.connect('strategist', self.strategist)
+        self.whale_tracker.connect('alert', self.alert)
 
         # Funding Rate → Strategist + Alert + Funding Cost
-        self.funding_rate.connect('strategist', self.strategist._inbox)
-        self.funding_rate.connect('alert', self.alert._inbox)
-        self.funding_rate.connect('funding_cost', self.funding_cost._inbox)
+        self.funding_rate.connect('strategist', self.strategist)
+        self.funding_rate.connect('alert', self.alert)
+        self.funding_rate.connect('funding_cost', self.funding_cost)
 
         # OnChain → Strategist + Alert
-        self.onchain.connect('strategist', self.strategist._inbox)
-        self.onchain.connect('alert', self.alert._inbox)
+        self.onchain.connect('strategist', self.strategist)
+        self.onchain.connect('alert', self.alert)
 
         # Event Calendar → Strategist + Risk Manager + Alert
-        self.event_calendar.connect('strategist', self.strategist._inbox)
-        self.event_calendar.connect('risk_manager', self.risk_manager._inbox)
-        self.event_calendar.connect('alert', self.alert._inbox)
+        self.event_calendar.connect('strategist', self.strategist)
+        self.event_calendar.connect('risk_manager', self.risk_manager)
+        self.event_calendar.connect('alert', self.alert)
 
         # Regulation → Strategist + Alert
-        self.regulation.connect('strategist', self.strategist._inbox)
-        self.regulation.connect('alert', self.alert._inbox)
+        self.regulation.connect('strategist', self.strategist)
+        self.regulation.connect('alert', self.alert)
 
         # Exchange Listing → Strategist + Alert
-        self.exchange_listing.connect('strategist', self.strategist._inbox)
-        self.exchange_listing.connect('alert', self.alert._inbox)
+        self.exchange_listing.connect('strategist', self.strategist)
+        self.exchange_listing.connect('alert', self.alert)
 
         # ══════════════════════════════════════════════════════════
         # ANALİZ → SİNYAL
         # ══════════════════════════════════════════════════════════
 
-        self.sentiment.connect('strategist', self.strategist._inbox)
-        self.sentiment.connect('alert', self.alert._inbox)
+        self.sentiment.connect('strategist', self.strategist)
+        self.sentiment.connect('alert', self.alert)
 
-        self.technical.connect('strategist', self.strategist._inbox)
-        self.technical.connect('alert', self.alert._inbox)
+        self.technical.connect('strategist', self.strategist)
+        self.technical.connect('alert', self.alert)
 
-        self.orderbook.connect('strategist', self.strategist._inbox)
-        self.orderbook.connect('slippage', self.slippage._inbox)
-        self.orderbook.connect('alert', self.alert._inbox)
+        self.orderbook.connect('strategist', self.strategist)
+        self.orderbook.connect('slippage', self.slippage)
+        self.orderbook.connect('alert', self.alert)
 
-        self.liquidation.connect('strategist', self.strategist._inbox)
-        self.liquidation.connect('alert', self.alert._inbox)
+        self.liquidation.connect('strategist', self.strategist)
+        self.liquidation.connect('alert', self.alert)
 
-        self.correlation.connect('strategist', self.strategist._inbox)
-        self.correlation.connect('alert', self.alert._inbox)
+        self.correlation.connect('strategist', self.strategist)
+        self.correlation.connect('alert', self.alert)
 
-        self.volatility.connect('strategist', self.strategist._inbox)
-        self.volatility.connect('smart_stop', self.smart_stop._inbox)
-        self.volatility.connect('alert', self.alert._inbox)
+        self.volatility.connect('strategist', self.strategist)
+        self.volatility.connect('smart_stop', self.smart_stop)
+        self.volatility.connect('alert', self.alert)
 
-        self.market_regime.connect('strategist', self.strategist._inbox)
-        self.market_regime.connect('alert', self.alert._inbox)
+        self.market_regime.connect('strategist', self.strategist)
+        self.market_regime.connect('alert', self.alert)
 
         # DeFi & Macro → Strategist + Alert
-        self.defi_monitor.connect('strategist', self.strategist._inbox)
-        self.defi_monitor.connect('alert', self.alert._inbox)
+        self.defi_monitor.connect('strategist', self.strategist)
+        self.defi_monitor.connect('alert', self.alert)
 
-        self.macro_tracker.connect('strategist', self.strategist._inbox)
-        self.macro_tracker.connect('alert', self.alert._inbox)
+        self.macro_tracker.connect('strategist', self.strategist)
+        self.macro_tracker.connect('alert', self.alert)
 
         # ══════════════════════════════════════════════════════════
         # FİYAT → HERKESE
         # ══════════════════════════════════════════════════════════
 
-        self.price_tracker.connect('strategist', self.strategist._inbox)
-        self.price_tracker.connect('risk_manager', self.risk_manager._inbox)
-        self.price_tracker.connect('portfolio', self.portfolio._inbox)
-        self.price_tracker.connect('technical', self.technical._inbox)
-        self.price_tracker.connect('correlation', self.correlation._inbox)
-        self.price_tracker.connect('whale_tracker', self.whale_tracker._inbox)
-        self.price_tracker.connect('backtest', self.backtest._inbox)
-        self.price_tracker.connect('volatility', self.volatility._inbox)
-        self.price_tracker.connect('market_regime', self.market_regime._inbox)
-        self.price_tracker.connect('flash_crash', self.flash_crash._inbox)
-        self.price_tracker.connect('smart_stop', self.smart_stop._inbox)
-        self.price_tracker.connect('alert', self.alert._inbox)
+        self.price_tracker.connect('strategist', self.strategist)
+        self.price_tracker.connect('risk_manager', self.risk_manager)
+        self.price_tracker.connect('portfolio', self.portfolio)
+        self.price_tracker.connect('technical', self.technical)
+        self.price_tracker.connect('correlation', self.correlation)
+        self.price_tracker.connect('whale_tracker', self.whale_tracker)
+        self.price_tracker.connect('backtest', self.backtest)
+        self.price_tracker.connect('volatility', self.volatility)
+        self.price_tracker.connect('market_regime', self.market_regime)
+        self.price_tracker.connect('flash_crash', self.flash_crash)
+        self.price_tracker.connect('smart_stop', self.smart_stop)
+        self.price_tracker.connect('alert', self.alert)
 
         # ══════════════════════════════════════════════════════════
         # SİNYAL & EXECUTION AKIŞI
         # ══════════════════════════════════════════════════════════
 
         # Strategist → Conflict Resolver (sinyaller önce çakışma çözücüden geçer)
-        self.strategist.connect('conflict_resolver', self.conflict_resolver._inbox)
-        self.strategist.connect('backtest', self.backtest._inbox)
-        self.strategist.connect('alert', self.alert._inbox)
+        self.strategist.connect('conflict_resolver', self.conflict_resolver)
+        self.strategist.connect('backtest', self.backtest)
+        self.strategist.connect('alert', self.alert)
 
         # Conflict Resolver → Executor
-        self.conflict_resolver.connect('executor', self.executor._inbox)
+        self.conflict_resolver.connect('executor', self.executor)
 
         # Executor → Position Speed, Slippage, Risk, Portfolio, Alert, Daily Report
-        self.executor.connect('position_speed', self.position_speed._inbox)
-        self.executor.connect('slippage', self.slippage._inbox)
-        self.executor.connect('risk_manager', self.risk_manager._inbox)
-        self.executor.connect('portfolio', self.portfolio._inbox)
-        self.executor.connect('daily_report', self.daily_report._inbox)
-        self.executor.connect('alert', self.alert._inbox)
+        self.executor.connect('position_speed', self.position_speed)
+        self.executor.connect('slippage', self.slippage)
+        self.executor.connect('risk_manager', self.risk_manager)
+        self.executor.connect('portfolio', self.portfolio)
+        self.executor.connect('daily_report', self.daily_report)
+        self.executor.connect('alert', self.alert)
 
         # Position Speed → Executor (parçalı emirler)
-        self.position_speed.connect('executor', self.executor._inbox)
+        self.position_speed.connect('executor', self.executor)
 
         # Slippage → Executor (slippage kontrolü)
-        self.slippage.connect('executor', self.executor._inbox)
+        self.slippage.connect('executor', self.executor)
 
         # Smart Stop → Risk Manager + Executor
-        self.smart_stop.connect('risk_manager', self.risk_manager._inbox)
-        self.smart_stop.connect('executor', self.executor._inbox)
+        self.smart_stop.connect('risk_manager', self.risk_manager)
+        self.smart_stop.connect('executor', self.executor)
 
         # Gradual Profit → Executor
-        self.gradual_profit.connect('executor', self.executor._inbox)
-        self.gradual_profit.connect('alert', self.alert._inbox)
+        self.gradual_profit.connect('executor', self.executor)
+        self.gradual_profit.connect('alert', self.alert)
 
         # Funding Cost → Strategist + Risk Manager + Alert
-        self.funding_cost.connect('strategist', self.strategist._inbox)
-        self.funding_cost.connect('risk_manager', self.risk_manager._inbox)
-        self.funding_cost.connect('alert', self.alert._inbox)
+        self.funding_cost.connect('strategist', self.strategist)
+        self.funding_cost.connect('risk_manager', self.risk_manager)
+        self.funding_cost.connect('alert', self.alert)
 
         # Risk Manager → Executor + Alert + Conflict Resolver
-        self.risk_manager.connect('executor', self.executor._inbox)
-        self.risk_manager.connect('conflict_resolver', self.conflict_resolver._inbox)
-        self.risk_manager.connect('alert', self.alert._inbox)
+        self.risk_manager.connect('executor', self.executor)
+        self.risk_manager.connect('conflict_resolver', self.conflict_resolver)
+        self.risk_manager.connect('alert', self.alert)
 
         # Portfolio → Alert + Drawdown + Balance Verify + Funding Cost + Daily Report
-        self.portfolio.connect('alert', self.alert._inbox)
-        self.portfolio.connect('drawdown', self.drawdown._inbox)
-        self.portfolio.connect('balance_verify', self.balance_verify._inbox)
-        self.portfolio.connect('funding_cost', self.funding_cost._inbox)
-        self.portfolio.connect('daily_report', self.daily_report._inbox)
+        self.portfolio.connect('alert', self.alert)
+        self.portfolio.connect('drawdown', self.drawdown)
+        self.portfolio.connect('balance_verify', self.balance_verify)
+        self.portfolio.connect('funding_cost', self.funding_cost)
+        self.portfolio.connect('daily_report', self.daily_report)
 
         # ══════════════════════════════════════════════════════════
         # GÜVENLİK AKIŞI
         # ══════════════════════════════════════════════════════════
 
         # Flash Crash → Kill Switch + Executor + Alert
-        self.flash_crash.connect('kill_switch', self.kill_switch._inbox)
-        self.flash_crash.connect('executor', self.executor._inbox)
-        self.flash_crash.connect('smart_stop', self.smart_stop._inbox)
-        self.flash_crash.connect('alert', self.alert._inbox)
+        self.flash_crash.connect('kill_switch', self.kill_switch)
+        self.flash_crash.connect('executor', self.executor)
+        self.flash_crash.connect('smart_stop', self.smart_stop)
+        self.flash_crash.connect('alert', self.alert)
 
         # Drawdown → Kill Switch + Risk Manager + Executor + Alert
-        self.drawdown.connect('kill_switch', self.kill_switch._inbox)
-        self.drawdown.connect('risk_manager', self.risk_manager._inbox)
-        self.drawdown.connect('executor', self.executor._inbox)
-        self.drawdown.connect('alert', self.alert._inbox)
+        self.drawdown.connect('kill_switch', self.kill_switch)
+        self.drawdown.connect('risk_manager', self.risk_manager)
+        self.drawdown.connect('executor', self.executor)
+        self.drawdown.connect('alert', self.alert)
 
         # API Health → Kill Switch + Alert
-        self.api_health.connect('kill_switch', self.kill_switch._inbox)
-        self.api_health.connect('alert', self.alert._inbox)
+        self.api_health.connect('kill_switch', self.kill_switch)
+        self.api_health.connect('alert', self.alert)
 
         # Balance Verify → Kill Switch + Alert
-        self.balance_verify.connect('kill_switch', self.kill_switch._inbox)
-        self.balance_verify.connect('alert', self.alert._inbox)
+        self.balance_verify.connect('kill_switch', self.kill_switch)
+        self.balance_verify.connect('alert', self.alert)
 
         # Kill Switch → Executor + Risk Manager + Conflict Resolver + Alert
-        self.kill_switch.connect('executor', self.executor._inbox)
-        self.kill_switch.connect('risk_manager', self.risk_manager._inbox)
-        self.kill_switch.connect('conflict_resolver', self.conflict_resolver._inbox)
-        self.kill_switch.connect('alert', self.alert._inbox)
+        self.kill_switch.connect('executor', self.executor)
+        self.kill_switch.connect('risk_manager', self.risk_manager)
+        self.kill_switch.connect('conflict_resolver', self.conflict_resolver)
+        self.kill_switch.connect('alert', self.alert)
 
         # ══════════════════════════════════════════════════════════
         # RAPORLAMA
         # ══════════════════════════════════════════════════════════
 
-        self.backtest.connect('alert', self.alert._inbox)
-        self.backtest.connect('strategist', self.strategist._inbox)
+        self.backtest.connect('alert', self.alert)
+        self.backtest.connect('strategist', self.strategist)
 
         # Daily Report → Telegram + Alert
-        self.daily_report.connect('telegram', self.telegram._inbox)
-        self.daily_report.connect('alert', self.alert._inbox)
+        self.daily_report.connect('telegram', self.telegram)
+        self.daily_report.connect('alert', self.alert)
 
         # Alert → Telegram (önemli olaylar)
-        self.alert.connect('telegram', self.telegram._inbox)
+        self.alert.connect('telegram', self.telegram)
 
         # Telegram → Kill Switch + Executor (komut dinleme)
-        self.telegram.connect('kill_switch', self.kill_switch._inbox)
-        self.telegram.connect('executor', self.executor._inbox)
+        self.telegram.connect('kill_switch', self.kill_switch)
+        self.telegram.connect('executor', self.executor)
 
     async def start(self, duration: int = None):
         """Tüm ajanları paralel başlat"""
@@ -479,61 +491,144 @@ class AgentOrchestrator:
             logger.warning(f"WebSocket hatası (REST API fallback aktif): {e}")
 
     async def _db_sync_loop(self):
-        """Periyodik olarak verileri DB'ye kaydet"""
+        """Periyodik olarak verileri DB'ye kaydet.
+
+        Her bölüm kendi try/except'i ile korunur — tek kayıt hatası diğerlerini
+        iptal etmesin. DB çağrıları senkron SQLite fsync içerdiği için
+        asyncio.to_thread ile worker thread'e alınır; event loop WS/mesaj
+        akışında takılmaz.
+        """
         while self._running:
+            # Ajan istatistikleri — tüm batch'i tek to_thread ile gönder
             try:
-                # Ajan istatistiklerini kaydet
-                for agent in self._agents:
-                    self.db.save_agent_stats(
-                        agent.name,
-                        agent.stats['cycles'],
-                        agent.stats['errors'],
-                        agent.stats,
-                    )
+                snapshots = [
+                    (a.name, a.stats['cycles'], a.stats['errors'], a.stats)
+                    for a in self._agents
+                ]
+                await asyncio.to_thread(self._write_agent_stats_batch, snapshots)
+            except Exception as e:
+                logger.error(f"DB sync [agent_stats] hatası: {e}")
 
-                # Fiyatları kaydet (sampling)
+            # Fiyatlar (sampling)
+            try:
                 if self.price_tracker._prev_prices:
-                    prices = {}
-                    for coin, price_data in list(self.price_tracker._prev_prices.items())[:10]:
-                        if hasattr(price_data, 'price'):
-                            prices[coin] = price_data
+                    prices = {
+                        coin: pd
+                        for coin, pd in list(self.price_tracker._prev_prices.items())[:10]
+                        if hasattr(pd, 'price')
+                    }
                     if prices:
-                        self.db.save_prices(prices)
+                        await asyncio.to_thread(self.db.save_prices, prices)
+            except Exception as e:
+                logger.error(f"DB sync [prices] hatası: {e}")
 
-                # Portfolio snapshot
-                self.db.save_portfolio_snapshot({
+            # Portfolio snapshot
+            try:
+                snapshot = {
                     **self.portfolio.portfolio_stats,
                     'open_positions': len(self.risk_manager.positions),
                     'risk_stats': self.risk_manager.risk_stats,
-                })
+                }
+                await asyncio.to_thread(self.db.save_portfolio_snapshot, snapshot)
+            except Exception as e:
+                logger.error(f"DB sync [portfolio] hatası: {e}")
 
-                # Sinyalleri kaydet (orchestrator-level set kullanıyoruz — signal_history'deki
-                # dict yerine tekrar üretilmesi durumunda da tekrar yazılmasın)
-                for sig in self.strategist.signal_history:
-                    sig_id = sig.get('id')
-                    if sig_id and sig_id not in self._saved_signal_ids:
-                        self.db.save_signal(sig)
-                        self._saved_signal_ids.add(sig_id)
+            # Sinyaller — zaten yazılanları atla (batch)
+            try:
+                new_signals = [
+                    s for s in self.strategist.signal_history
+                    if s.get('id') and s['id'] not in self._saved_signal_ids
+                ]
+                if new_signals:
+                    await asyncio.to_thread(self._write_signals_batch, new_signals)
+            except Exception as e:
+                logger.error(f"DB sync [signals] hatası: {e}")
 
-                # Trade'leri kaydet — get_order_history() her seferinde YENİ dict
-                # döndürüyor, o yüzden dict üzerindeki _db_saved flag'i kaybolur.
-                # order_id + signal_id kombinasyonunu orchestrator-level set'te tut.
-                order_key_to_trade_id: dict[str, int] = getattr(self, '_order_key_to_trade_id', {})
-                self._order_key_to_trade_id = order_key_to_trade_id
-
-                for order in self.executor.executor.get_order_history():
+            # Trade'ler — tüm geçmişi tara (limit=None). Yeni olanları batch yaz.
+            try:
+                new_orders = []
+                for order in self.executor.executor.get_order_history(limit=None):
                     key = f"{order.get('order_id')}:{order.get('signal_id')}"
                     if key not in self._saved_order_keys:
-                        trade_id = self.db.save_trade(order)
-                        self._saved_order_keys.add(key)
-                        if trade_id:
-                            order_key_to_trade_id[key] = trade_id
-
-
+                        new_orders.append((key, order))
+                if new_orders:
+                    await asyncio.to_thread(self._write_trades_batch, new_orders)
             except Exception as e:
-                logger.error(f"DB sync hatası: {e}")
+                logger.error(f"DB sync [trades] hatası: {e}")
 
-            await asyncio.sleep(60)  # Her dakika
+            # Set kapasitelerini sınırla (uzun çalışmada memory leak olmasın)
+            self._prune_saved_ids()
+
+            # Zombi-agent kontrolü
+            self._check_zombie_agents()
+
+            await asyncio.sleep(60)
+
+    def _write_agent_stats_batch(self, snapshots):
+        """Thread'de çalışan batch writer — event loop'u tıkamaz."""
+        for name, cycles, errors, stats in snapshots:
+            try:
+                self.db.save_agent_stats(name, cycles, errors, stats)
+            except Exception as e:
+                logger.error(f"save_agent_stats [{name}] hatası: {e}")
+
+    def _write_signals_batch(self, signals):
+        for sig in signals:
+            try:
+                self.db.save_signal(sig)
+                self._saved_signal_ids.add(sig['id'])
+            except Exception as e:
+                logger.error(f"save_signal [{sig.get('id')}] hatası: {e}")
+
+    def _write_trades_batch(self, keyed_orders):
+        for key, order in keyed_orders:
+            try:
+                trade_id = self.db.save_trade(order)
+                self._saved_order_keys.add(key)
+                if trade_id:
+                    self._order_key_to_trade_id[key] = trade_id
+            except Exception as e:
+                logger.error(f"save_trade [{key}] hatası: {e}")
+
+    def _prune_saved_ids(self):
+        """Büyüyen set/dict'leri MAX_SAVED_IDS'a indir. DB UNIQUE kısıtı olduğu
+        için unutulmuş id için yeniden INSERT denemesi sadece WARN üretir."""
+        if len(self._saved_signal_ids) > self.MAX_SAVED_IDS:
+            # Set'ten keyfi bir alt küme al — hangi id'lerin kalacağı önemsiz
+            # (DB authoritative). Yarısını tut.
+            keep = self.MAX_SAVED_IDS // 2
+            self._saved_signal_ids = set(list(self._saved_signal_ids)[-keep:])
+        if len(self._saved_order_keys) > self.MAX_SAVED_IDS:
+            keep = self.MAX_SAVED_IDS // 2
+            dropped = set(list(self._saved_order_keys)[:-keep])
+            self._saved_order_keys -= dropped
+            for k in dropped:
+                self._order_key_to_trade_id.pop(k, None)
+
+    def _check_zombie_agents(self):
+        """Bir ajanın döngü sayısı son sync'ten beri artmamışsa zombi say."""
+        for agent in self._agents:
+            current = agent.stats['cycles']
+            prev = self._prev_cycle_counts.get(agent.name)
+            self._prev_cycle_counts[agent.name] = current
+
+            if prev is None:
+                continue
+
+            # Hiç cycle geçmemiş AND beklenen süre dolmuş AND ajan çalışıyor
+            expected_cycles_per_sync = max(1, int(60 / max(agent.interval, 1)))
+            if current == prev and agent.is_running:
+                self._stale_agent_reports[agent.name] = self._stale_agent_reports.get(agent.name, 0) + 1
+                threshold = self.ZOMBIE_CYCLE_MULTIPLIER
+                # 60sn/interval < threshold ise ajan normalde yavaş, atla
+                if expected_cycles_per_sync >= 1 and self._stale_agent_reports[agent.name] >= threshold:
+                    logger.warning(
+                        f"ZOMBI AJAN | {agent.name} son {threshold} sync'te hiç cycle "
+                        f"ilerletmedi (errors={agent.stats['errors']}, interval={agent.interval}s)"
+                    )
+                    self._stale_agent_reports[agent.name] = 0
+            else:
+                self._stale_agent_reports.pop(agent.name, None)
 
     async def _sl_tp_watch_loop(self):
         """Simülasyon pozisyonlarını hızlı aralıkla SL/TP için tara.
@@ -553,16 +648,16 @@ class AgentOrchestrator:
                     for c in closed:
                         o = c['order']
                         key = f"{o.order_id}:{o.signal_id}"
-                        trade_id = self._order_key_to_trade_id.get(key) if hasattr(self, '_order_key_to_trade_id') else None
+                        trade_id = self._order_key_to_trade_id.get(key)
                         if trade_id is None:
                             # Trade henüz DB'ye yazılmamış olabilir — önce yaz, sonra kapat
-                            trade_id = self.db.save_trade(o.to_dict())
+                            trade_id = await asyncio.to_thread(self.db.save_trade, o.to_dict())
                             self._saved_order_keys.add(key)
-                            if not hasattr(self, '_order_key_to_trade_id'):
-                                self._order_key_to_trade_id = {}
-                            self._order_key_to_trade_id[key] = trade_id
+                            if trade_id:
+                                self._order_key_to_trade_id[key] = trade_id
                         if trade_id:
-                            self.db.close_trade(
+                            await asyncio.to_thread(
+                                self.db.close_trade,
                                 trade_id=trade_id,
                                 pnl=c['pnl'],
                                 pnl_pct=c['pnl_pct'],
@@ -596,11 +691,23 @@ class AgentOrchestrator:
         self._running = False
 
         # WebSocket kapat
-        await self.websocket.stop()
+        try:
+            await self.websocket.stop()
+        except Exception as e:
+            logger.warning(f"WebSocket kapatma hatası: {e}")
 
         # Ajanları durdur
         for agent in self._agents:
-            await agent.stop()
+            try:
+                await agent.stop()
+            except Exception as e:
+                logger.warning(f"Ajan kapatma hatası [{agent.name}]: {e}")
+
+        # Executor'ın httpx client'ını kapat (connection leak olmasın)
+        try:
+            await self.executor.executor.close()
+        except Exception as e:
+            logger.warning(f"Executor HTTP client kapatma hatası: {e}")
 
         # DB'ye kapanış kaydı
         self.db.save_event('system_stop', 'orchestrator', {
