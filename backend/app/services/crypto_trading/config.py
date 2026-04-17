@@ -45,8 +45,8 @@ class CryptoTradingConfig:
     TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '5.0'))
 
     # === Zamanlama ===
-    # Haber tarama aralığı (saniye)
-    NEWS_SCAN_INTERVAL = int(os.environ.get('NEWS_SCAN_INTERVAL', '120'))
+    # Haber tarama aralığı (saniye) — borsa duyuruları hızla fiyatı etkiler, kısa interval kritik
+    NEWS_SCAN_INTERVAL = int(os.environ.get('NEWS_SCAN_INTERVAL', '5'))
 
     # Fiyat güncelleme aralığı (saniye)
     PRICE_UPDATE_INTERVAL = int(os.environ.get('PRICE_UPDATE_INTERVAL', '30'))

@@ -63,3 +63,7 @@ data/
 # Trading DB
 backend/data/
 *.db
+
+# Telegram MTProto session dosyaları (hesaba tam erişim sağlar — paylaşma!)
+*.session
+*.session-journal

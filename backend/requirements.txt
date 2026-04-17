@@ -41,3 +41,5 @@ httpx>=0.27.0
 websockets>=12.0
 # Flask realtime
 flask-socketio>=5.3.0
+# Telegram MTProto listener (push-based news feed)
+telethon>=1.36.0

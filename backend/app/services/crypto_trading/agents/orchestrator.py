@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 # === VERİ TOPLAMA AJANLARI ===
 from .news_scout import NewsScoutAgent
+from .telegram_listener_agent import TelegramListenerAgent
 from .social_media_agent import SocialMediaAgent
 from .whale_tracker_agent import WhaleTrackerAgent
 from .funding_rate_agent import FundingRateAgent
@@ -101,8 +102,9 @@ class AgentOrchestrator:
         # WebSocket
         self.websocket = BinanceWebSocket()
 
-        # === VERİ TOPLAMA AJANLARI (10) ===
+        # === VERİ TOPLAMA AJANLARI (11) ===
         self.news_scout = NewsScoutAgent(interval=CryptoTradingConfig.NEWS_SCAN_INTERVAL)
+        self.telegram_listener = TelegramListenerAgent(interval=10.0)
         self.social_media = SocialMediaAgent(interval=180.0)
         self.whale_tracker = WhaleTrackerAgent(interval=120.0)
         self.funding_rate = FundingRateAgent(interval=300.0)
@@ -155,9 +157,9 @@ class AgentOrchestrator:
 
         self._agents = [
             # Veri Toplama
-            self.news_scout, self.social_media, self.whale_tracker, self.funding_rate,
-            self.defi_monitor, self.macro_tracker, self.onchain, self.event_calendar,
-            self.regulation, self.exchange_listing,
+            self.news_scout, self.telegram_listener, self.social_media, self.whale_tracker,
+            self.funding_rate, self.defi_monitor, self.macro_tracker, self.onchain,
+            self.event_calendar, self.regulation, self.exchange_listing,
             # Haber İşleme
             self.news_dedup, self.news_impact, self.news_verify,
             # Analiz
@@ -176,6 +178,8 @@ class AgentOrchestrator:
 
         self._running = False
         self._started_at = None
+        self._saved_signal_ids: set[str] = set()
+        self._saved_order_keys: set[str] = set()
 
         self._setup_channels()
 
@@ -189,6 +193,10 @@ class AgentOrchestrator:
         # News Scout → News Dedup (önce tekrar filtresi)
         self.news_scout.connect('news_dedup', self.news_dedup._inbox)
         self.news_scout.connect('alert', self.alert._inbox)
+
+        # Telegram Listener → News Dedup (push modda breaking news)
+        self.telegram_listener.connect('news_dedup', self.news_dedup._inbox)
+        self.telegram_listener.connect('alert', self.alert._inbox)
 
         # News Dedup → Sentiment + News Impact + News Verify
         self.news_dedup.connect('sentiment', self.sentiment._inbox)
@@ -404,9 +412,9 @@ class AgentOrchestrator:
 
         categories = {
             'Veri Toplama': [
-                self.news_scout, self.social_media, self.whale_tracker, self.funding_rate,
-                self.defi_monitor, self.macro_tracker, self.onchain, self.event_calendar,
-                self.regulation, self.exchange_listing,
+                self.news_scout, self.telegram_listener, self.social_media, self.whale_tracker,
+                self.funding_rate, self.defi_monitor, self.macro_tracker, self.onchain,
+                self.event_calendar, self.regulation, self.exchange_listing,
             ],
             'Haber Isleme': [self.news_dedup, self.news_impact, self.news_verify],
             'Analiz': [
@@ -452,6 +460,7 @@ class AgentOrchestrator:
         tasks = [asyncio.create_task(agent.start()) for agent in self._agents]
         tasks.append(asyncio.create_task(self._run_websocket()))
         tasks.append(asyncio.create_task(self._db_sync_loop()))
+        tasks.append(asyncio.create_task(self._sl_tp_watch_loop()))
 
         if duration:
             await asyncio.sleep(duration)
@@ -498,22 +507,88 @@ class AgentOrchestrator:
                     'risk_stats': self.risk_manager.risk_stats,
                 })
 
-                # Sinyalleri kaydet
+                # Sinyalleri kaydet (orchestrator-level set kullanıyoruz — signal_history'deki
+                # dict yerine tekrar üretilmesi durumunda da tekrar yazılmasın)
                 for sig in self.strategist.signal_history:
-                    if not sig.get('_db_saved'):
+                    sig_id = sig.get('id')
+                    if sig_id and sig_id not in self._saved_signal_ids:
                         self.db.save_signal(sig)
-                        sig['_db_saved'] = True
+                        self._saved_signal_ids.add(sig_id)
 
-                # Trade'leri kaydet
+                # Trade'leri kaydet — get_order_history() her seferinde YENİ dict
+                # döndürüyor, o yüzden dict üzerindeki _db_saved flag'i kaybolur.
+                # order_id + signal_id kombinasyonunu orchestrator-level set'te tut.
+                order_key_to_trade_id: dict[str, int] = getattr(self, '_order_key_to_trade_id', {})
+                self._order_key_to_trade_id = order_key_to_trade_id
+
                 for order in self.executor.executor.get_order_history():
-                    if not order.get('_db_saved'):
-                        self.db.save_trade(order)
-                        order['_db_saved'] = True
+                    key = f"{order.get('order_id')}:{order.get('signal_id')}"
+                    if key not in self._saved_order_keys:
+                        trade_id = self.db.save_trade(order)
+                        self._saved_order_keys.add(key)
+                        if trade_id:
+                            order_key_to_trade_id[key] = trade_id
+
 
             except Exception as e:
                 logger.error(f"DB sync hatası: {e}")
 
             await asyncio.sleep(60)  # Her dakika
+
+    async def _sl_tp_watch_loop(self):
+        """Simülasyon pozisyonlarını hızlı aralıkla SL/TP için tara.
+
+        DB sync her 60sn — o kadar beklersek fiyat SL'i çoktan geçmiş olur.
+        Bu döngü 3 saniyede bir kontrol eder ve kapanan pozisyonlar için
+        DB.close_trade() çağırır.
+        """
+        if not CryptoTradingConfig.SIMULATION_MODE:
+            return
+
+        while self._running:
+            try:
+                prev_prices = self.price_tracker._prev_prices
+                if prev_prices:
+                    closed = self.executor.executor.evaluate_simulated_positions(prev_prices)
+                    for c in closed:
+                        o = c['order']
+                        key = f"{o.order_id}:{o.signal_id}"
+                        trade_id = self._order_key_to_trade_id.get(key) if hasattr(self, '_order_key_to_trade_id') else None
+                        if trade_id is None:
+                            # Trade henüz DB'ye yazılmamış olabilir — önce yaz, sonra kapat
+                            trade_id = self.db.save_trade(o.to_dict())
+                            self._saved_order_keys.add(key)
+                            if not hasattr(self, '_order_key_to_trade_id'):
+                                self._order_key_to_trade_id = {}
+                            self._order_key_to_trade_id[key] = trade_id
+                        if trade_id:
+                            self.db.close_trade(
+                                trade_id=trade_id,
+                                pnl=c['pnl'],
+                                pnl_pct=c['pnl_pct'],
+                                reason=c['reason'],
+                            )
+                        # Risk manager'a pozisyon kapandı bildir
+                        await self.executor.send('risk_manager', {
+                            'type': 'position_closed',
+                            'coin': o.coin,
+                            'reason': c['reason'],
+                            'pnl': c['pnl'],
+                        })
+                        await self.executor.send('portfolio', {
+                            'type': 'position_closed',
+                            'coin': o.coin,
+                            'reason': c['reason'],
+                            'pnl': c['pnl'],
+                        })
+                        await self.executor.send('conflict_resolver', {
+                            'type': 'position_closed',
+                            'coin': o.coin,
+                        })
+            except Exception as e:
+                logger.error(f"SL/TP watch hatası: {e}")
+
+            await asyncio.sleep(3)
 
     async def stop(self):
         """Tüm ajanları durdur"""

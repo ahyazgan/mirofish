@@ -8,6 +8,7 @@ Kaynaklar:
 - NewsAPI (genel haberler, kripto filtreli)
 - GNews API (alternatif haber kaynağı)
 - RSS Feeds (CoinDesk, CoinTelegraph, TheBlock, Decrypt, Bitcoin Magazine)
+- Borsa duyuruları (Binance CMS, Upbit, Coinbase, OKX, Bybit) — en hızlı fiyat etkili sinyal
 """
 
 import asyncio
@@ -284,50 +285,326 @@ class CryptoPanicFetcher:
         return items
 
 
-class BinanceRSSFetcher:
-    """Binance Blog RSS - ücretsiz"""
+class BinanceAnnouncementFetcher:
+    """
+    Binance resmi duyuru CMS API'si.
+    Bazı coğrafyalarda ana endpoint kısıtlı — fallback URL ile bypass.
+    """
 
-    FEED_URL = 'https://www.binance.com/en/feed/rss'
+    # Catalog ID → kategori etiketi (Binance CMS API'sinden doğrulandı)
+    # 48: New Cryptocurrency Listing | 128: Crypto Airdrop
+    # 161: Delisting | 49: Latest Binance News
+    CATALOGS = {
+        48: 'new_listing',
+        161: 'delisting',
+        128: 'airdrop',
+        49: 'latest_news',
+    }
+
+    PRIMARY_URL = 'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query'
+    FALLBACK_URL = 'https://www.binance.com/bapi/apex/v1/public/apex/cms/article/list/query'
+
+    _HEADERS = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36'
+        ),
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.binance.com/en/support/announcement',
+        'Origin': 'https://www.binance.com',
+        'lang': 'en',
+        'clienttype': 'web',
+    }
+
+    async def _fetch_from_endpoint(
+        self, client: httpx.AsyncClient, url: str, catalog_id: int
+    ) -> list[dict]:
+        params = {
+            'type': 1,
+            'catalogId': catalog_id,
+            'pageNo': 1,
+            'pageSize': 10,
+        }
+        response = await client.get(url, params=params, headers=self._HEADERS, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return (data.get('data') or {}).get('articles') or []
+
+    async def fetch(self, client: httpx.AsyncClient) -> list[NewsItem]:
+        items = []
+        for catalog_id, category in self.CATALOGS.items():
+            articles = []
+            try:
+                articles = await self._fetch_from_endpoint(client, self.PRIMARY_URL, catalog_id)
+                if not articles:
+                    logger.debug(f"Binance ana endpoint boş ({category}), fallback deneniyor")
+                    articles = await self._fetch_from_endpoint(
+                        client, self.FALLBACK_URL, catalog_id
+                    )
+            except Exception as e:
+                logger.warning(f"Binance CMS fetch hatası ({category}): {e}")
+                continue
+
+            importance = 'high' if category in ('new_listing', 'delisting', 'airdrop') else 'medium'
+            sentiment_hint = (
+                'positive' if category in ('new_listing', 'airdrop')
+                else 'negative' if category == 'delisting'
+                else None
+            )
+
+            for article in articles:
+                title = article.get('title', '')
+                if not title:
+                    continue
+
+                release_ts = article.get('releaseDate', 0)
+                try:
+                    published_at = (
+                        datetime.fromtimestamp(release_ts / 1000, tz=timezone.utc)
+                        if release_ts else datetime.now(timezone.utc)
+                    )
+                except (ValueError, OSError, TypeError):
+                    published_at = datetime.now(timezone.utc)
+
+                article_code = article.get('code', '')
+
+                items.append(NewsItem(
+                    id=_generate_id('binance_cms', article_code or title),
+                    title=f"[Binance {category.upper()}] {title}",
+                    body=article.get('body', '') or title,
+                    source=f'Binance/{category}',
+                    url=(
+                        f'https://www.binance.com/en/support/announcement/{article_code}'
+                        if article_code else ''
+                    ),
+                    published_at=published_at,
+                    coins=_detect_coins(title),
+                    importance=importance,
+                    sentiment_hint=sentiment_hint,
+                ))
+
+        if items:
+            logger.info(f"Binance CMS: {len(items)} duyuru toplandı")
+        else:
+            logger.warning(
+                "Binance CMS her iki endpoint'ten de veri dönmedi — "
+                "muhtemelen coğrafi kısıtlama. VPS (Tokyo/Singapur) öneriliyor."
+            )
+        return items
+
+
+class UpbitAnnouncementFetcher:
+    """Upbit (Kore) listing duyuruları - ücretsiz, çok hızlı fiyat etkisi yapar"""
+
+    BASE_URL = 'https://api-manager.upbit.com/api/v1/announcements'
 
     async def fetch(self, client: httpx.AsyncClient) -> list[NewsItem]:
         items = []
         try:
-            resp = await client.get(self.FEED_URL, timeout=15, follow_redirects=True)
+            params = {'os': 'web', 'page': 1, 'per_page': 20, 'category': 'trade'}
+            resp = await client.get(self.BASE_URL, params=params, timeout=15)
             resp.raise_for_status()
-            root = ET.fromstring(resp.text)
+            data = resp.json()
+            notices = (data.get('data') or {}).get('notices') or data.get('notices') or []
 
-            channel = root.find('channel')
-            if channel is None:
-                return items
-
-            for item_el in channel.findall('item')[:15]:
-                title = item_el.findtext('title', '')
-                desc = item_el.findtext('description', '') or ''
-                link = item_el.findtext('link', '')
-                pub_str = item_el.findtext('pubDate', '')
-
+            for notice in notices:
+                title = notice.get('title', '')
+                notice_id = notice.get('id', '')
+                listed_at = notice.get('listed_at', '') or notice.get('first_listed_at', '')
                 try:
-                    pub_dt = parsedate_to_datetime(pub_str).replace(tzinfo=timezone.utc) if pub_str else datetime.now(timezone.utc)
-                except Exception:
+                    pub_dt = datetime.fromisoformat(listed_at.replace('Z', '+00:00')) if listed_at else datetime.now(timezone.utc)
+                except (ValueError, AttributeError):
                     pub_dt = datetime.now(timezone.utc)
 
-                clean_desc = re.sub(r'<[^>]+>', '', desc)
-                coins = _detect_coins(f"{title} {clean_desc}")
+                coins = _detect_coins(title)
+                title_lower = title.lower()
+                is_listing = '디지털 자산' in title or '거래지원' in title or 'listing' in title_lower or 'new' in title_lower
+                hint = 'positive' if is_listing else None
+                importance = 'high' if coins else 'medium'
 
                 items.append(NewsItem(
-                    id=_generate_id('binance_rss', title),
-                    title=title,
-                    body=clean_desc[:500],
-                    source='Binance Blog',
-                    url=link,
+                    id=_generate_id('upbit_ann', title),
+                    title=f"[Upbit] {title}",
+                    body=title,
+                    source='Upbit Announcements',
+                    url=f"https://upbit.com/service_center/notice?id={notice_id}" if notice_id else '',
                     published_at=pub_dt,
                     coins=coins,
+                    sentiment_hint=hint,
+                    importance=importance,
+                ))
+            logger.info(f"Upbit: {len(items)} duyuru toplandı")
+        except Exception as e:
+            logger.warning(f"Upbit Announcement fetch hatası: {e}")
+
+        return items
+
+
+class CoinbaseAnnouncementFetcher:
+    """Coinbase blog RSS — Cloudflare korumalı, birden fazla mirror dener"""
+
+    SOURCES = [
+        ('blog_rss', 'https://www.coinbase.com/blog/rss.xml'),
+        ('nitter', 'https://nitter.net/coinbase/rss'),
+    ]
+
+    _HEADERS = {
+        'User-Agent': (
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/605.1.15 (KHTML, like Gecko) '
+            'Version/17.0 Safari/605.1.15'
+        ),
+        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+    _LISTING_KEYWORDS = ('is now available', 'listing', 'launching', 'now live', 'added', 'now supports')
+
+    async def fetch(self, client: httpx.AsyncClient) -> list[NewsItem]:
+        items: list[NewsItem] = []
+
+        for source_name, url in self.SOURCES:
+            try:
+                response = await client.get(
+                    url, headers=self._HEADERS, timeout=15, follow_redirects=True
+                )
+                response.raise_for_status()
+                root = ET.fromstring(response.text)
+
+                for item in root.iter('item'):
+                    title = (item.findtext('title') or '').strip()
+                    if not title:
+                        continue
+                    link = (item.findtext('link') or '').strip()
+                    description = (item.findtext('description') or '').strip()
+                    pub_date_str = item.findtext('pubDate') or ''
+
+                    try:
+                        published_at = parsedate_to_datetime(pub_date_str)
+                        if published_at.tzinfo is None:
+                            published_at = published_at.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        published_at = datetime.now(timezone.utc)
+
+                    clean_desc = re.sub(r'<[^>]+>', '', description)
+                    title_lower = title.lower()
+                    is_listing = any(kw in title_lower for kw in self._LISTING_KEYWORDS)
+
+                    items.append(NewsItem(
+                        id=_generate_id(f'coinbase_{source_name}', title),
+                        title=f"[Coinbase] {title}",
+                        body=clean_desc[:500],
+                        source=f'Coinbase/{source_name}',
+                        url=link,
+                        published_at=published_at,
+                        coins=_detect_coins(f"{title} {clean_desc}"),
+                        importance='high' if is_listing else 'medium',
+                        sentiment_hint='positive' if is_listing else None,
+                    ))
+
+                if items:
+                    logger.info(f"Coinbase/{source_name}: {len(items)} haber toplandı")
+                    break
+            except Exception as e:
+                logger.warning(f"Coinbase {source_name} fetch hatası: {e}")
+                continue
+
+        if not items:
+            logger.warning("Coinbase: hiçbir kaynaktan veri dönmedi")
+        return items
+
+
+class OKXAnnouncementFetcher:
+    """OKX listing duyuruları - public API"""
+
+    BASE_URL = 'https://www.okx.com/api/v5/support/announcements'
+
+    async def fetch(self, client: httpx.AsyncClient) -> list[NewsItem]:
+        items = []
+        try:
+            resp = await client.get(self.BASE_URL, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            anns = []
+            for block in data.get('data', []) or []:
+                anns.extend(block.get('details', []) or [])
+
+            for ann in anns[:25]:
+                title = ann.get('title', '')
+                url = ann.get('url', '')
+                ts = ann.get('pTime', '') or ann.get('releaseDate', '') or ann.get('p_time', '')
+                try:
+                    pub_dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc) if ts else datetime.now(timezone.utc)
+                except (ValueError, OSError, TypeError):
+                    pub_dt = datetime.now(timezone.utc)
+
+                coins = _detect_coins(title)
+                title_lower = title.lower()
+                is_listing = 'listing' in title_lower or 'list' in title_lower or 'launching' in title_lower
+                hint = 'positive' if is_listing else None
+
+                items.append(NewsItem(
+                    id=_generate_id('okx_ann', title),
+                    title=f"[OKX] {title}",
+                    body=title,
+                    source='OKX Announcements',
+                    url=url,
+                    published_at=pub_dt,
+                    coins=coins,
+                    sentiment_hint=hint,
+                    importance='high' if (coins and is_listing) else 'medium',
+                ))
+            logger.info(f"OKX: {len(items)} duyuru toplandı")
+        except Exception as e:
+            logger.warning(f"OKX Announcement fetch hatası: {e}")
+
+        return items
+
+
+class BybitAnnouncementFetcher:
+    """Bybit listing duyuruları - public API"""
+
+    BASE_URL = 'https://api.bybit.com/v5/announcements/index'
+
+    async def fetch(self, client: httpx.AsyncClient) -> list[NewsItem]:
+        items = []
+        try:
+            params = {'locale': 'en-US', 'type': 'new_crypto', 'limit': 20}
+            resp = await client.get(self.BASE_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            anns = ((data.get('result') or {}).get('list')) or []
+
+            for ann in anns:
+                title = ann.get('title', '')
+                url = ann.get('url', '')
+                ts = ann.get('dateTimestamp', 0) or ann.get('publishTime', 0)
+                try:
+                    pub_dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc) if ts else datetime.now(timezone.utc)
+                except (ValueError, OSError, TypeError):
+                    pub_dt = datetime.now(timezone.utc)
+
+                coins = _detect_coins(title)
+
+                items.append(NewsItem(
+                    id=_generate_id('bybit_ann', title),
+                    title=f"[Bybit] {title}",
+                    body=title,
+                    source='Bybit Announcements',
+                    url=url,
+                    published_at=pub_dt,
+                    coins=coins,
+                    sentiment_hint='positive',
                     importance='high' if coins else 'medium',
                 ))
-
-            logger.info(f"Binance RSS: {len(items)} haber toplandı")
+            logger.info(f"Bybit: {len(items)} duyuru toplandı")
         except Exception as e:
-            logger.warning(f"Binance RSS fetch hatası: {e}")
+            logger.warning(f"Bybit Announcement fetch hatası: {e}")
 
         return items
 
@@ -553,6 +830,11 @@ class NewsAggregator:
             NewsAPIFetcher(),
             GNewsFetcher(),
             RSSFetcher(),
+            BinanceAnnouncementFetcher(),
+            UpbitAnnouncementFetcher(),
+            CoinbaseAnnouncementFetcher(),
+            OKXAnnouncementFetcher(),
+            BybitAnnouncementFetcher(),
         ]
         self._seen_ids: set[str] = set()
         self._cache: list[NewsItem] = []

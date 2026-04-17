@@ -128,6 +128,13 @@ class TradeExecutor:
             logger.info("Simülasyon modu - demo trade")
             return self._simulate_order(signal)
 
+        # GERÇEK EMİR YOLU: aynı coin için açık pozisyon varsa yeni emir açma
+        if signal.coin in self._active_positions:
+            logger.info(
+                f"Emir atlandı: {signal.coin} için açık pozisyon var"
+            )
+            return None
+
         symbol = f"{signal.coin}USDT"
         side = 'BUY' if signal.action == SignalAction.BUY else 'SELL'
 
@@ -313,12 +320,27 @@ class TradeExecutor:
             logger.error(f"Hesap bakiyesi hatası: {e}")
             return {'error': str(e), 'balances': []}
 
-    def _simulate_order(self, signal: TradingSignal) -> TradeOrder:
-        """API anahtarı yokken simülasyon emri oluştur"""
+    def _simulate_order(self, signal: TradingSignal) -> Optional[TradeOrder]:
+        """API anahtarı yokken simülasyon emri oluştur.
+
+        Aynı coin için açık pozisyon varsa yeni emir açma — sadece mevcut
+        pozisyonu döndür (duplicate trade'leri engeller).
+        """
+        if signal.coin in self._active_positions:
+            existing = self._active_positions[signal.coin]
+            logger.info(
+                f"Simülasyon atlandı: {signal.coin} için açık pozisyon var "
+                f"(order={existing.order_id} entry={existing.price})"
+            )
+            return None
+
         quantity = signal.position_size_usdt / signal.entry_price
 
+        # Use unique order_id so DB tracking sees each as distinct
+        order_id = f"SIM-{signal.id}-{int(time.time() * 1000)}"
+
         order = TradeOrder(
-            order_id=f"SIM-{int(time.time())}",
+            order_id=order_id,
             signal_id=signal.id,
             coin=signal.coin,
             side='BUY' if signal.action == SignalAction.BUY else 'SELL',
@@ -328,12 +350,89 @@ class TradeExecutor:
             status='SIMULATED',
             filled_at=datetime.now(timezone.utc),
         )
+        # SL/TP değerlerini simülasyon tarafında tutabilmek için raw_response'a yaz
+        order.raw_response = {
+            'stop_loss': signal.stop_loss,
+            'take_profit': signal.take_profit,
+            'size_usdt': signal.position_size_usdt,
+        }
 
         self._order_history.append(order)
+        self._active_positions[signal.coin] = order
         signal.executed = True
 
-        logger.info(f"Simülasyon emri: {signal.coin} {order.side} qty={order.quantity} price={order.price}")
+        logger.info(
+            f"Simülasyon emri: {signal.coin} {order.side} qty={order.quantity} "
+            f"price={order.price} SL={signal.stop_loss} TP={signal.take_profit}"
+        )
         return order
+
+    def evaluate_simulated_positions(self, current_prices: dict) -> list[dict]:
+        """Simülasyon pozisyonlarını mevcut fiyatlara göre değerlendir, SL/TP'ye
+        değenleri kapat ve kapatma kayıtlarını döndür.
+
+        current_prices: dict[coin] -> PriceData veya float
+        Döndürdüğü liste: {'order': TradeOrder, 'close_price': float, 'pnl': float,
+                          'pnl_pct': float, 'reason': 'stop_loss'|'take_profit'}
+        """
+        closed = []
+        for coin in list(self._active_positions.keys()):
+            position = self._active_positions[coin]
+            if position.status not in ('SIMULATED', 'FILLED'):
+                continue
+
+            price_data = current_prices.get(coin)
+            if price_data is None:
+                continue
+            current_price = getattr(price_data, 'price', price_data)
+            if not isinstance(current_price, (int, float)) or current_price <= 0:
+                continue
+
+            sl = position.raw_response.get('stop_loss', 0)
+            tp = position.raw_response.get('take_profit', 0)
+            size_usdt = position.raw_response.get('size_usdt', 0)
+
+            close_reason = None
+            if position.side == 'BUY':
+                if sl and current_price <= sl:
+                    close_reason = 'stop_loss'
+                elif tp and current_price >= tp:
+                    close_reason = 'take_profit'
+            else:  # SELL
+                if sl and current_price >= sl:
+                    close_reason = 'stop_loss'
+                elif tp and current_price <= tp:
+                    close_reason = 'take_profit'
+
+            if not close_reason:
+                continue
+
+            # PnL
+            if position.side == 'BUY':
+                pnl_pct = (current_price - position.price) / position.price * 100
+            else:
+                pnl_pct = (position.price - current_price) / position.price * 100
+            pnl = size_usdt * pnl_pct / 100 if size_usdt else 0.0
+
+            position.status = 'CLOSED'
+            position.pnl = pnl
+            position.filled_at = position.filled_at or datetime.now(timezone.utc)
+
+            closed.append({
+                'order': position,
+                'close_price': current_price,
+                'pnl': pnl,
+                'pnl_pct': pnl_pct,
+                'reason': close_reason,
+            })
+
+            del self._active_positions[coin]
+            logger.info(
+                f"SIM KAPANDI | {coin} {position.side} entry={position.price} "
+                f"exit={current_price} pnl={pnl:+.2f} ({pnl_pct:+.2f}%) sebep={close_reason}"
+            )
+
+        return closed
 
     async def _load_lot_sizes(self):
         """Binance exchangeInfo'dan lot size'ları dinamik yükle"""
