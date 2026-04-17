@@ -64,6 +64,6 @@ data/
 backend/data/
 *.db
 
-# Telegram MTProto session dosyaları (hesaba tam erişim sağlar — paylaşma!)
+# Telethon session dosyaları (kullanıcı kimlik bilgileri içerir!)
 *.session
 *.session-journal

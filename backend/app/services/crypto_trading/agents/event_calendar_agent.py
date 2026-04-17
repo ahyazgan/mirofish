@@ -170,8 +170,8 @@ class EventCalendarAgent(BaseAgent):
                             'impact': impact,
                             'source': 'coinmarketcal',
                         })
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f"CoinMarketCal fetch hatası: {e}")
 
         return events[:20]
 

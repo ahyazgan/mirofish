@@ -656,13 +656,20 @@ class AgentOrchestrator:
                             if trade_id:
                                 self._order_key_to_trade_id[key] = trade_id
                         if trade_id:
-                            await asyncio.to_thread(
+                            rows = await asyncio.to_thread(
                                 self.db.close_trade,
                                 trade_id=trade_id,
                                 pnl=c['pnl'],
                                 pnl_pct=c['pnl_pct'],
                                 reason=c['reason'],
                             )
+                            if rows == 0:
+                                # Trade zaten kapalı veya id bulunamadı — cache temizle
+                                self.logger.warning(
+                                    f"close_trade id={trade_id} {o.coin} 0 satır etkilendi "
+                                    f"(zaten kapalı ya da bulunamadı)"
+                                )
+                                self._order_key_to_trade_id.pop(key, None)
                         # Risk manager'a pozisyon kapandı bildir
                         await self.executor.send('risk_manager', {
                             'type': 'position_closed',
@@ -709,11 +716,15 @@ class AgentOrchestrator:
         except Exception as e:
             logger.warning(f"Executor HTTP client kapatma hatası: {e}")
 
-        # DB'ye kapanış kaydı
-        self.db.save_event('system_stop', 'orchestrator', {
-            'started_at': self._started_at.isoformat() if self._started_at else None,
-            'summary': self.get_status(),
-        })
+        # DB'ye kapanış kaydı — sync SQLite'ı event loop'tan ayır
+        summary = await asyncio.to_thread(self.get_status)
+        await asyncio.to_thread(
+            self.db.save_event,
+            'system_stop', 'orchestrator', {
+                'started_at': self._started_at.isoformat() if self._started_at else None,
+                'summary': summary,
+            },
+        )
 
         logger.info("Tüm ajanlar durduruldu")
 

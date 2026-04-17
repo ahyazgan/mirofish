@@ -129,8 +129,8 @@ class ExchangeListingAgent(BaseAgent):
                     if signal:
                         signals.append(signal)
 
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Exchange listing fetch hatası: {e}")
 
         # Seen cleanup
         if len(self._seen_announcements) > 2000:

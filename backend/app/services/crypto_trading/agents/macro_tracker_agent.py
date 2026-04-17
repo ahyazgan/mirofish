@@ -117,8 +117,8 @@ class MacroTrackerAgent(BaseAgent):
                         'reason': f'Altın {change_24h:+.1f}% (${current:.0f})',
                         'source': 'macro',
                     }
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Macro fetch hatası: {e}")
         return None
 
     async def _check_dxy_proxy(self) -> dict | None:
@@ -162,8 +162,8 @@ class MacroTrackerAgent(BaseAgent):
                         'reason': f'USD {direction} (DXY proxy {dxy_proxy_change:+.1f}%)',
                         'source': 'macro',
                     }
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Macro fetch hatası: {e}")
         return None
 
     async def _check_stock_market(self) -> list[dict]:
@@ -209,8 +209,8 @@ class MacroTrackerAgent(BaseAgent):
                                     'reason': f'{name} {change:+.1f}% (${price:.2f})',
                                     'source': 'macro',
                                 })
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Stock fetch hatası ({name}): {e}")
 
         return signals
 

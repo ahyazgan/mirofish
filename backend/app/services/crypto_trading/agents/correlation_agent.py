@@ -188,8 +188,8 @@ class CorrelationAgent(BaseAgent):
                 resp = await client.get(self.GLOBAL_URL)
                 if resp.status_code == 200:
                     return resp.json()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Global data fetch hatası: {e}")
         return None
 
     async def _fetch_fear_greed(self) -> dict | None:
@@ -200,8 +200,8 @@ class CorrelationAgent(BaseAgent):
                     data = resp.json()
                     if data.get('data'):
                         return data['data'][0]
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Fear&Greed fetch hatası: {e}")
         return None
 
     @staticmethod

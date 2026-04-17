@@ -6,7 +6,9 @@ MiroFish Crypto Trading - Multi-Agent System
 
 import asyncio
 import logging
+import logging.handlers
 import os
+import signal
 import sys
 
 if sys.platform == 'win32':
@@ -25,15 +27,20 @@ from app.services.crypto_trading.config import CryptoTradingConfig
 from app.services.crypto_trading.agents.orchestrator import AgentOrchestrator
 from app.services.crypto_trading.dashboard import DashboardServer
 
-# Loglama
+# Loglama — rotasyon ile (büyük log dosyası patlamasını engelle)
 os.makedirs('logs/crypto_trading', exist_ok=True)
+_log_file = 'logs/crypto_trading/trading.log'
+_max_bytes = int(os.getenv('LOG_MAX_BYTES', 10 * 1024 * 1024))  # 10 MB
+_backup_count = int(os.getenv('LOG_BACKUP_COUNT', 5))
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('logs/crypto_trading/trading.log', encoding='utf-8'),
+        logging.handlers.RotatingFileHandler(
+            _log_file, maxBytes=_max_bytes, backupCount=_backup_count, encoding='utf-8'
+        ),
     ]
 )
 logging.getLogger('httpx').setLevel(logging.WARNING)
@@ -42,7 +49,9 @@ logging.getLogger('websockets').setLevel(logging.WARNING)
 logging.getLogger('engineio').setLevel(logging.WARNING)
 logging.getLogger('socketio').setLevel(logging.WARNING)
 
-DURATION_SECONDS = 1800  # 30 dakika
+# Env'den çalışma süresi ve dashboard portu — sabit kodlanmış değerler üretim için esnek değil
+DURATION_SECONDS = int(os.getenv('TRADING_DURATION_SECONDS', 1800))  # default: 30 dk
+DASHBOARD_PORT = int(os.getenv('DASHBOARD_PORT', 5050))
 
 
 async def main():
@@ -124,13 +133,45 @@ async def main():
     orchestrator = AgentOrchestrator()
 
     # Dashboard başlat
-    dashboard = DashboardServer(orchestrator=orchestrator, port=5050)
+    dashboard = DashboardServer(orchestrator=orchestrator, port=DASHBOARD_PORT)
     dashboard.start()
-    print("  Dashboard: http://localhost:5050")
+    print(f"  Dashboard: http://localhost:{DASHBOARD_PORT}")
     print()
 
+    # SIGTERM/SIGINT → graceful shutdown (container/supervisor ortamları için)
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def _handle_stop_signal(sig_name: str):
+        print(f"\n{sig_name} alındı, graceful shutdown başlatılıyor...")
+        stop_event.set()
+
+    for sig_name in ('SIGINT', 'SIGTERM'):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, _handle_stop_signal, sig_name)
+        except NotImplementedError:
+            # Windows SelectorEventLoop add_signal_handler desteklemez; fallback sync handler
+            signal.signal(sig, lambda s, f: stop_event.set())
+
     try:
-        await orchestrator.start(duration=DURATION_SECONDS)
+        orchestrator_task = asyncio.create_task(orchestrator.start(duration=DURATION_SECONDS))
+        stop_task = asyncio.create_task(stop_event.wait())
+        done, pending = await asyncio.wait(
+            {orchestrator_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done:
+            await orchestrator.stop()
+            orchestrator_task.cancel()
+            try:
+                await orchestrator_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        else:
+            stop_task.cancel()
     except KeyboardInterrupt:
         print("\nKullanici tarafindan durduruldu")
         await orchestrator.stop()

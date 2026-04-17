@@ -116,8 +116,8 @@ class DefiMonitorAgent(BaseAgent):
                             'reason': f'{name} TVL {change_1d:+.1f}% (${tvl/1e6:.0f}M)',
                             'source': 'defi_monitor',
                         })
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"DeFi fetch hatası: {e}")
 
         return signals[:10]
 
@@ -161,8 +161,8 @@ class DefiMonitorAgent(BaseAgent):
                                 'reason': f'{name} chain TVL {change_pct:+.1f}%',
                                 'source': 'defi_monitor',
                             })
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"DeFi fetch hatası: {e}")
 
         return signals
 
@@ -201,7 +201,7 @@ class DefiMonitorAgent(BaseAgent):
                                 'reason': f'Stablecoin mcap {change:+.1f}% artış (risk-off sinyali)',
                                 'source': 'defi_monitor',
                             })
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"DeFi fetch hatası: {e}")
 
         return signals

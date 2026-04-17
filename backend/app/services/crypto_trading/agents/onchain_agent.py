@@ -144,8 +144,8 @@ class OnChainAgent(BaseAgent):
                                 'source': 'onchain',
                             })
 
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Onchain fetch hatası: {e}")
 
         return signals
 
@@ -219,7 +219,7 @@ class OnChainAgent(BaseAgent):
                                 'source': 'onchain',
                             })
 
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Onchain fetch hatası: {e}")
 
         return signals

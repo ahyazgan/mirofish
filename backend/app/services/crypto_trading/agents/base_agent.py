@@ -12,14 +12,35 @@ from typing import Any
 class BaseAgent(ABC):
     """Tüm trading ajanlarının base class'ı"""
 
-    # Kritik mesaj tipleri — kaybolması sistemi riske sokar, asla düşürülmez
+    # Kritik mesaj tipleri — kaybolması sistemi riske sokar, asla düşürülmez.
+    # Hem alert tipleri (flash_crash, drawdown_exceeded) hem komut tipleri
+    # (cancel_all_orders, lock_trading) dahil; kill switch akışında bu komutların
+    # normal kuyruğa düşüp OOM anında atılması sistemi riske sokar.
     CRITICAL_MESSAGE_TYPES: frozenset = frozenset({
+        # Kill switch aktivasyon/kontrol
         'kill_switch_activated',
+        'kill_switch_deactivated',
+        'manual_kill',
+        'manual_restart',
         'resume_trading',
-        'position_closed',
+        'lock_trading',
+        'cancel_all_orders',
+        'close_all_positions',
+        'pause_trading',
+        # Flash crash
         'flash_crash',
-        'emergency_stop',
+        'flash_crash_critical',
+        # Drawdown
+        'drawdown_exceeded',
+        'drawdown_daily_limit',
+        # Altyapı sağlık
+        'api_critical_error',
+        'balance_mismatch',
+        # Pozisyon/risk
+        'position_closed',
+        'close_position',
         'risk_rejected',
+        'emergency_stop',
     })
 
     def __init__(self, name: str, interval: float = 10.0):

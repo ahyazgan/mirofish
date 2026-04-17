@@ -3,6 +3,7 @@ Binance Trade Executor
 Sinyalleri gerçek (veya testnet) Binance emirlerine dönüştürür.
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -17,6 +18,31 @@ from .config import CryptoTradingConfig
 from .signal_engine import SignalAction, TradingSignal
 
 logger = logging.getLogger('crypto_trading.executor')
+
+
+class _RateLimiter:
+    """Basit token-bucket rate limiter (Binance 1200 req/min limit için)."""
+
+    def __init__(self, max_requests: int, window_seconds: float):
+        self.max_requests = max_requests
+        self.window = window_seconds
+        self._timestamps: list[float] = []
+        self._lock = asyncio.Lock()
+
+    async def acquire(self):
+        async with self._lock:
+            now = time.monotonic()
+            cutoff = now - self.window
+            self._timestamps = [t for t in self._timestamps if t > cutoff]
+            if len(self._timestamps) >= self.max_requests:
+                # En eski istek penceresinden çıkana kadar bekle
+                wait = self._timestamps[0] + self.window - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    now = time.monotonic()
+                    cutoff = now - self.window
+                    self._timestamps = [t for t in self._timestamps if t > cutoff]
+            self._timestamps.append(now)
 
 
 @dataclass
@@ -81,6 +107,8 @@ class TradeExecutor:
         self._http_client: httpx.AsyncClient | None = None
         self._lot_sizes: dict[str, int] = {}
         self._lot_sizes_loaded = False
+        # Binance: 1200 ağırlıklı istek/dakika — güvenlik için 1000 ile sınırla
+        self._rate_limiter = _RateLimiter(max_requests=1000, window_seconds=60.0)
 
         if self.use_testnet:
             logger.info("Binance TESTNET modu aktif")
@@ -168,26 +196,56 @@ class TradeExecutor:
 
             if order.get('status') == 'FILLED':
                 trade_order.filled_at = datetime.now(timezone.utc)
+                opposite_side = 'SELL' if side == 'BUY' else 'BUY'
 
-                # Stop-loss emri gönder
+                # Stop-loss emri gönder — KRİTİK
                 sl_order = await self._place_stop_loss(
                     symbol=symbol,
-                    side='SELL' if side == 'BUY' else 'BUY',
+                    side=opposite_side,
                     quantity=quantity,
                     stop_price=signal.stop_loss,
                 )
                 if sl_order:
                     trade_order.stop_loss_order_id = str(sl_order.get('orderId', ''))
+                else:
+                    # SL başarısız → pozisyon korumasız, ACİL market kapat
+                    logger.error(
+                        f"SL EMRİ BAŞARISIZ: {symbol} qty={quantity} — "
+                        f"pozisyon korumasız! Market-close deneniyor."
+                    )
+                    try:
+                        close_order = await self._place_order(
+                            symbol=symbol,
+                            side=opposite_side,
+                            order_type='MARKET',
+                            quantity=quantity,
+                        )
+                        trade_order.status = 'FAILED'
+                        trade_order.error = f'SL başarısız, pozisyon market-close edildi: {close_order.get("orderId") if close_order else "?"}'
+                    except Exception as close_err:
+                        logger.critical(
+                            f"SL BAŞARISIZ + MARKET-CLOSE DA BAŞARISIZ: {symbol} — "
+                            f"MANUEL MÜDAHALE GEREKLİ! Hata: {close_err}"
+                        )
+                        trade_order.status = 'FAILED'
+                        trade_order.error = f'SL ve market-close başarısız: {close_err}'
+                    self._order_history.append(trade_order)
+                    return trade_order
 
-                # Take-profit emri gönder
+                # Take-profit emri gönder — SL varsa TP opsiyonel
                 tp_order = await self._place_take_profit(
                     symbol=symbol,
-                    side='SELL' if side == 'BUY' else 'BUY',
+                    side=opposite_side,
                     quantity=quantity,
                     price=signal.take_profit,
                 )
                 if tp_order:
                     trade_order.take_profit_order_id = str(tp_order.get('orderId', ''))
+                else:
+                    # TP başarısız ama SL var → loglayıp devam et
+                    logger.warning(
+                        f"TP emri başarısız: {symbol} — SL aktif, manuel TP takibi gerekebilir"
+                    )
 
             self._order_history.append(trade_order)
             self._active_positions[signal.coin] = trade_order
@@ -215,7 +273,7 @@ class TradeExecutor:
             return error_order
 
     async def _place_order(self, symbol: str, side: str, order_type: str, quantity: float) -> Optional[dict]:
-        """Binance'e emir gönder"""
+        """Binance'e emir gönder (rate-limit + 429 backoff ile)"""
         params = {
             'symbol': symbol,
             'side': side,
@@ -229,13 +287,27 @@ class TradeExecutor:
         signed = self._sign(params)
 
         client = await self._get_client()
-        resp = await client.post(
-            f"{self.base_url}/api/v3/order",
-            params=signed,
-            headers=self._headers(),
-        )
+        # Rate limit ve 429 backoff ile POST
+        for attempt in range(3):
+            await self._rate_limiter.acquire()
+            resp = await client.post(
+                f"{self.base_url}/api/v3/order",
+                params=signed,
+                headers=self._headers(),
+            )
+            # 429 (rate limit) / 418 (IP ban) → Retry-After'a uyarak bekle
+            if resp.status_code in (429, 418):
+                retry_after = float(resp.headers.get('Retry-After', 2 ** attempt))
+                logger.warning(
+                    f"Binance rate limit ({resp.status_code}) → {retry_after:.1f}s bekleme"
+                )
+                await asyncio.sleep(min(retry_after, 60))
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        # 3 denemeden sonra da başarısızsa son hatayı fırlat
         resp.raise_for_status()
-        return resp.json()
+        return None
 
     async def _place_stop_loss(self, symbol: str, side: str, quantity: float, stop_price: float) -> Optional[dict]:
         """Stop-loss emri gönder"""

@@ -57,11 +57,15 @@ class BacktestAgent(BaseAgent):
                 self._pending_signals.append({
                     'signal': signal,
                     'entry_price': signal.get('entry_price', 0),
+                    'stop_loss': signal.get('stop_loss', 0),
+                    'take_profit': signal.get('take_profit', 0),
                     'coin': signal.get('coin', ''),
                     'action': signal.get('action', ''),
                     'strength': signal.get('strength', ''),
                     'score': signal.get('sentiment_score', 0),
                     'reasons': signal.get('reasons', []),
+                    # Yapılandırılmış kaynak listesi (signal.sources olarak üretilir)
+                    'sources': signal.get('sources', []) if isinstance(signal.get('sources'), list) else [],
                     'created_at': datetime.now(timezone.utc),
                     'verified': False,
                 })
@@ -101,12 +105,28 @@ class BacktestAgent(BaseAgent):
                 continue
 
             price_change_pct = ((current_price - entry_price) / entry_price) * 100
+            sl = signal_data.get('stop_loss', 0) or 0
+            tp = signal_data.get('take_profit', 0) or 0
 
-            # Doğruluk: BUY sinyalinde fiyat yükseldi mi? SELL sinyalinde düştü mü?
+            # Doğruluk kriterleri:
+            # 1. SL/TP varsa: TP yönüne yaklaştı mı / SL'i geçti mi
+            # 2. Yoksa: minimum %1 hareket eşiği ile yön kontrolü (rastgelelikten ayır)
+            MIN_MOVE_THRESHOLD = 1.0  # %1
+
             if action == 'BUY':
-                correct = price_change_pct > 0
+                if tp and sl and current_price >= tp:
+                    correct = True
+                elif tp and sl and current_price <= sl:
+                    correct = False
+                else:
+                    correct = price_change_pct >= MIN_MOVE_THRESHOLD
             elif action == 'SELL':
-                correct = price_change_pct < 0
+                if tp and sl and current_price <= tp:
+                    correct = True
+                elif tp and sl and current_price >= sl:
+                    correct = False
+                else:
+                    correct = price_change_pct <= -MIN_MOVE_THRESHOLD
             else:
                 continue
 
@@ -136,27 +156,30 @@ class BacktestAgent(BaseAgent):
 
     def _update_source_stats(self, signal_data: dict):
         """Sinyal kaynak istatistiklerini güncelle"""
-        reasons = signal_data.get('reasons', [])
         correct = signal_data.get('correct', False)
 
-        # Her reason'dan kaynak çıkar
-        sources = set()
-        for reason in reasons:
-            reason_lower = reason.lower()
-            if 'rsi' in reason_lower or 'macd' in reason_lower or 'bollinger' in reason_lower:
-                sources.add('technical_analysis')
-            elif 'funding' in reason_lower:
-                sources.add('funding_rate')
-            elif 'whale' in reason_lower or 'balina' in reason_lower:
-                sources.add('whale_tracker')
-            elif 'orderbook' in reason_lower or 'bid' in reason_lower:
-                sources.add('orderbook')
-            elif 'reddit' in reason_lower or 'social' in reason_lower:
-                sources.add('social_media')
-            elif 'fear' in reason_lower or 'dominan' in reason_lower:
-                sources.add('correlation')
-            else:
-                sources.add('news_sentiment')
+        # 1. Yapılandırılmış kaynaklar (signal.sources listesi) — tercih edilen
+        structured_sources = signal_data.get('sources', [])
+        sources = set(s for s in structured_sources if isinstance(s, str) and s)
+
+        # 2. Fallback: reason metninden kaynak türet (yapılandırılmış yoksa)
+        if not sources:
+            for reason in signal_data.get('reasons', []):
+                reason_lower = reason.lower()
+                if 'rsi' in reason_lower or 'macd' in reason_lower or 'bollinger' in reason_lower:
+                    sources.add('technical_analysis')
+                elif 'funding' in reason_lower:
+                    sources.add('funding_rate')
+                elif 'whale' in reason_lower or 'balina' in reason_lower:
+                    sources.add('whale_tracker')
+                elif 'orderbook' in reason_lower or 'bid' in reason_lower:
+                    sources.add('orderbook')
+                elif 'reddit' in reason_lower or 'social' in reason_lower:
+                    sources.add('social_media')
+                elif 'fear' in reason_lower or 'dominan' in reason_lower:
+                    sources.add('correlation')
+                else:
+                    sources.add('news_sentiment')
 
         # Kaynak yoksa genel sentiment
         if not sources:

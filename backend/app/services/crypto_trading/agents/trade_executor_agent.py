@@ -346,8 +346,8 @@ class TradeExecutorAgent(BaseAgent):
             # Eski stop emrini iptal et
             try:
                 await self.executor.cancel_all_orders(f"{coin}USDT")
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(f"Eski stop emri iptal edilemedi ({coin}): {e}")
 
             # Yeni stop emri koy
             close_side = 'SELL' if position.side == 'BUY' else 'BUY'

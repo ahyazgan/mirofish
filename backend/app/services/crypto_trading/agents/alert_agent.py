@@ -264,5 +264,5 @@ class AlertAgent(BaseAgent):
                     safe_event = {k: v for k, v in event.items()
                                  if not isinstance(v, (bytes, type))}
                     f.write(json.dumps(safe_event, ensure_ascii=False, default=str) + '\n')
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.warning(f"Alert log yazma hatası: {e}")

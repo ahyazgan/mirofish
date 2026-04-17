@@ -189,11 +189,16 @@ class TradingDatabase:
                  datetime.now(timezone.utc).isoformat()))
             return c.lastrowid
 
-    def close_trade(self, trade_id: int, pnl: float, pnl_pct: float, reason: str):
+    def close_trade(self, trade_id: int, pnl: float, pnl_pct: float, reason: str) -> int:
+        """Pozisyonu kapat. Etkilenen satır sayısını döndürür (0 → trade bulunamadı).
+
+        Yalnızca henüz kapatılmamış trade'i kapatır — aynı trade'i iki kez kapatmaz.
+        """
         with self._cursor() as c:
             c.execute('''UPDATE trades SET pnl=?, pnl_pct=?, close_reason=?,
-                closed_at=? WHERE id=?''',
+                closed_at=? WHERE id=? AND closed_at IS NULL''',
                 (pnl, pnl_pct, reason, datetime.now(timezone.utc).isoformat(), trade_id))
+            return c.rowcount
 
     def get_trades(self, limit: int = 50, coin: str = None) -> list[dict]:
         with self._cursor() as c:

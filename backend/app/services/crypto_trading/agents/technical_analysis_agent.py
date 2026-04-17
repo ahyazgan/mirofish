@@ -88,8 +88,8 @@ class TechnicalAnalysisAgent(BaseAgent):
                             'highs': highs,
                             'lows': lows,
                         }
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Kline fetch hatası ({coin}): {e}")
 
     def _analyze_coin(self, coin: str) -> dict | None:
         """Tek coin için teknik analiz"""

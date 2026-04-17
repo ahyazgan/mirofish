@@ -39,6 +39,21 @@ class BinanceWebSocket:
         self._callbacks: list = []
         self._subscribed_symbols: set[str] = set()
         self._reconnect_delay = 1
+        # Stale veri tespiti için — son mesaj zamanı
+        self._last_message_at: datetime | None = None
+
+    def is_stale(self, max_age_seconds: float = 30.0) -> bool:
+        """Son mesajdan `max_age_seconds` geçti mi? True → WS bağlantısı/stream dondu demek."""
+        if self._last_message_at is None:
+            return True  # Hiç mesaj gelmedi
+        age = (datetime.now(timezone.utc) - self._last_message_at).total_seconds()
+        return age > max_age_seconds
+
+    @property
+    def last_message_age_seconds(self) -> float:
+        if self._last_message_at is None:
+            return float('inf')
+        return (datetime.now(timezone.utc) - self._last_message_at).total_seconds()
 
     @property
     def prices(self) -> dict[str, PriceData]:
@@ -109,10 +124,10 @@ class BinanceWebSocket:
                     stream_data = data.get('data', data)
                     if stream_data.get('e'):
                         await self._process_ticker(stream_data)
-                except json.JSONDecodeError:
-                    pass
-                except Exception:
-                    pass  # Hatalı mesajları sessizce atla
+                except json.JSONDecodeError as e:
+                    logger.debug(f"WS: bozuk JSON frame atlandı ({e})")
+                except Exception as e:
+                    logger.warning(f"WS mesaj işleme hatası: {e}")
 
     async def _process_ticker(self, data: dict):
         """Mini ticker verisini işle"""
@@ -155,6 +170,7 @@ class BinanceWebSocket:
         )
 
         self._prices[coin] = price_data
+        self._last_message_at = datetime.now(timezone.utc)
 
         # Callback'leri çağır
         for callback in self._callbacks:
@@ -163,8 +179,8 @@ class BinanceWebSocket:
                     await callback(coin, price_data)
                 else:
                     callback(coin, price_data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"WS callback hatası ({coin}): {e}")
 
     async def stop(self):
         """WebSocket'i kapat"""

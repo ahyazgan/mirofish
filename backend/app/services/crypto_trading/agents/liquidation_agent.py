@@ -112,8 +112,8 @@ class LiquidationAgent(BaseAgent):
                                 }
                                 all_liqs.append(liq)
                                 self._recent_liquidations.append(liq)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Liquidation fetch hatası ({coin}): {e}")
 
         # Cleanup
         if len(self._seen_orders) > 10000:
@@ -223,7 +223,7 @@ class LiquidationAgent(BaseAgent):
                                     'reason': f'OI {oi_change:+.1f}% düşüş (kaldıraç temizleniyor)',
                                     'source': 'liquidation',
                                 })
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Open interest fetch hatası ({coin}): {e}")
 
         return signals

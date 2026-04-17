@@ -178,8 +178,8 @@ class TelegramListenerAgent(BaseAgent):
         if self._client:
             try:
                 await self._client.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Telegram disconnect hatası (önemsiz): {e}")
         await super().stop()
 
     @property

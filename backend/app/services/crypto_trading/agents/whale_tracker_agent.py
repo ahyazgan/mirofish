@@ -119,8 +119,8 @@ class WhaleTrackerAgent(BaseAgent):
                                 'time': datetime.now(timezone.utc).isoformat(),
                                 'signal_score': 0.15 if is_buy else -0.15,
                             })
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Whale tracker fetch hatası ({coin}): {e}")
 
         # Çok fazla eski txid biriktirmesin
         if len(self._seen_txids) > 10000:
@@ -175,7 +175,7 @@ class WhaleTrackerAgent(BaseAgent):
                             'time': datetime.now(timezone.utc).isoformat(),
                             'signal_score': 0.0,  # Transfer yönü bilinmiyor
                         })
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"BTC whale fetch hatası: {e}")
 
         return events

@@ -57,10 +57,10 @@ class KillSwitchAgent(BaseAgent):
             msg_type = msg.get('type', '')
 
             # Flash crash → CRITICAL
-            if msg_type == 'flash_crash_critical':
+            if msg_type == 'flash_crash':
                 await self._activate(
                     reason=f"Flash crash: {msg.get('coin', '?')} {msg.get('crash_info', {}).get('drop_pct', 0):.1f}% düşüş",
-                    severity='CRITICAL',
+                    severity=msg.get('severity', 'CRITICAL'),
                 )
 
             # Drawdown limiti

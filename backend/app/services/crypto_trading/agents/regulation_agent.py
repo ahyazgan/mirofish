@@ -153,8 +153,8 @@ class RegulationAgent(BaseAgent):
                             'created_at': item.get('created_at', ''),
                         })
 
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Regulation news fetch hatası: {e}")
 
         # Seen ID cleanup
         if len(self._seen_ids) > 5000:

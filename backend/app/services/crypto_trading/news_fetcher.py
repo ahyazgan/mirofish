@@ -870,6 +870,11 @@ class NewsAggregator:
                 self._seen_ids.add(item.id)
                 unique_items.append(item)
 
+        # _seen_ids bellek sızıntısı olmasın → sadece son 10K id'yi tut
+        if len(self._seen_ids) > 10000:
+            # FIFO benzeri davranış için set'i trim et (son dedup dediğimiz gibi değil ama bellek sınırı kritik)
+            self._seen_ids = set(list(self._seen_ids)[-5000:])
+
         # Zamana göre sırala (en yeni önce)
         unique_items.sort(key=lambda x: x.published_at, reverse=True)
 

@@ -174,9 +174,10 @@ class FlashCrashAgent(BaseAgent):
         # 3. CRITICAL ise kill switch tetikle
         if severity == 'CRITICAL':
             await self.send('kill_switch', {
-                'type': 'flash_crash_critical',
+                'type': 'flash_crash',
                 'coin': coin,
                 'crash_info': crash_info,
+                'severity': 'CRITICAL',
             })
             action['actions'].append('kill_switch_triggered')
 

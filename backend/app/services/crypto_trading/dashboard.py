@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -364,9 +365,9 @@ DASHBOARD_HTML = '''
             const typeMap = {
                 'signal_generated': 'signal',
                 'trade_executed': 'trade',
-                'position_closing': 'risk',
+                'position_closed': 'risk',
                 'risk_locked': 'risk',
-                'risk_reject': 'risk',
+                'risk_rejected': 'risk',
             };
             const cls = typeMap[event.type] || 'info';
             const time = event.time ? event.time.split('T')[1]?.split('.')[0] || '' : '';
@@ -396,8 +397,28 @@ DASHBOARD_HTML = '''
 def create_dashboard_app(orchestrator=None) -> tuple:
     """Dashboard Flask uygulaması oluştur"""
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = 'mirofish-trading-dashboard'
+    # Secret key env'den; yoksa runtime'da kriptografik rastgele üret (sabit kodlamadan kaçın)
+    secret_key = os.environ.get('DASHBOARD_SECRET_KEY') or secrets.token_hex(32)
+    app.config['SECRET_KEY'] = secret_key
     socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+    # Basit rate limit (IP bazlı): saniyede max N istek
+    _rate_limit_window = float(os.environ.get('DASHBOARD_RATE_WINDOW', 1.0))
+    _rate_limit_max = int(os.environ.get('DASHBOARD_RATE_MAX', 20))
+    _rate_state: dict[str, list[float]] = {}
+    _rate_lock = threading.Lock()
+
+    def _check_rate_limit(ip: str) -> bool:
+        now = time.time()
+        with _rate_lock:
+            bucket = _rate_state.setdefault(ip, [])
+            # Pencere dışı istekleri at
+            cutoff = now - _rate_limit_window
+            bucket[:] = [t for t in bucket if t > cutoff]
+            if len(bucket) >= _rate_limit_max:
+                return False
+            bucket.append(now)
+            return True
 
     def _check_auth():
         """Token auth kontrolü (DASHBOARD_TOKEN ayarlıysa)"""
@@ -408,6 +429,9 @@ def create_dashboard_app(orchestrator=None) -> tuple:
 
     @app.before_request
     def before_request():
+        ip = request.remote_addr or '?'
+        if not _check_rate_limit(ip):
+            abort(429)
         _check_auth()
 
     @app.route('/')
@@ -450,8 +474,13 @@ class DashboardServer:
                          allow_unsafe_werkzeug=True, log_output=False)
 
     def _update_loop(self):
-        """Periyodik olarak dashboard'a veri gönder"""
+        """Periyodik olarak dashboard'a veri gönder.
+
+        Tekrarlayan hata olursa exponential backoff uygular (log flood'u engeller).
+        """
         time.sleep(3)  # Başlangıç bekleme
+        consecutive_errors = 0
+        base_interval = 3.0
         while self._running:
             try:
                 if self.orchestrator:
@@ -487,10 +516,26 @@ class DashboardServer:
                     for event in events[-5:]:
                         self.socketio.emit('new_event', event)
 
-            except Exception as e:
-                logger.error(f"Dashboard güncelleme hatası: {e}")
+                consecutive_errors = 0
 
-            time.sleep(3)  # 3 saniyede bir güncelle
+            except Exception as e:
+                consecutive_errors += 1
+                # Exponential backoff (max 60 sn)
+                backoff = min(60.0, base_interval * (2 ** consecutive_errors))
+                if consecutive_errors <= 3 or consecutive_errors % 10 == 0:
+                    logger.error(
+                        f"Dashboard güncelleme hatası (#{consecutive_errors}, "
+                        f"{backoff:.0f}s backoff): {e}"
+                    )
+                time.sleep(backoff)
+                continue
+
+            time.sleep(base_interval)  # 3 saniyede bir güncelle
 
     def stop(self):
+        """Dashboard'u kapat. Flask dev server için graceful shutdown yok — flag + join."""
         self._running = False
+        if self._update_thread and self._update_thread.is_alive():
+            self._update_thread.join(timeout=5.0)
+        # socketio thread daemon olarak çalışıyor; process çıkışında otomatik kapanır
+        logger.info("Dashboard durduruldu")

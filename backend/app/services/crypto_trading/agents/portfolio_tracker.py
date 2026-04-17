@@ -69,6 +69,9 @@ class PortfolioTrackerAgent(BaseAgent):
                 price = order.get('price', 0)
                 quantity = order.get('quantity', 0)
                 size_usdt = signal.get('position_size_usdt', 0)
+                # Fallback: Signal size=0 ise gerçekten yürütülen qty*price'tan hesapla
+                if not size_usdt and quantity and price:
+                    size_usdt = quantity * price
 
                 self._trades.append({
                     'coin': coin,
@@ -121,7 +124,7 @@ class PortfolioTrackerAgent(BaseAgent):
                     'coin': coin,
                 })
                 await self.send('daily_report', {
-                    'type': 'position_closing',
+                    'type': 'position_closed',
                     'coin': coin,
                     'pnl': pnl,
                 })
